@@ -41,11 +41,7 @@
   <div id="outputs"></div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Raw JSON (first 1 match)</h3>
-  <div class="muted">For debugging and transparency.</div>
-  <pre id="raw"></pre>
-</div>
+<!-- Raw JSON section removed -->
 
 <script>
 let refreshTimer = null;
@@ -160,9 +156,7 @@ async function fetchOdds(){
   page = 1;
   renderPage();
 
-  // raw
-  const raw = (j.raw && j.raw.length) ? j.raw[0] : {};
-  document.getElementById('raw').textContent = JSON.stringify(raw, null, 2);
+  // raw section removed
 
   // auto refresh
   if (refreshTimer) clearInterval(refreshTimer);
