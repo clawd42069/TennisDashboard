@@ -173,7 +173,7 @@ loadCandidates();
     <tbody>
       {% for b in bets %}
         <tr>
-          <td class="muted">{{ b.ts|fmt_local }}</td>
+          <td class="muted">{{ b.ts|fmt_et }}</td>
           <td>{{ b.tournament or '' }}</td>
           <td class="muted">{{ b.match_label or b.match_id or '' }}</td>
           <td><strong>{{ b.player }}</strong></td>

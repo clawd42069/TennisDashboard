@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 
@@ -30,26 +31,27 @@ def create_app():
         """Tab B: Matchup report (raw odds + outputs)."""
         return render_template("matchups.html")
 
-    def fmt_local(iso: str | None):
+    ET = ZoneInfo("America/New_York")
+
+    def fmt_et(iso: str | None):
         if not iso:
             return ""
         try:
             dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         except Exception:
             return iso
-        # Use local time
-        dt_local = dt.astimezone()
-        hour = dt_local.hour
-        minute = dt_local.minute
+        dt_et = dt.astimezone(ET)
+        hour = dt_et.hour
+        minute = dt_et.minute
         ampm = "PM" if hour >= 12 else "AM"
         hour12 = hour % 12
         if hour12 == 0:
             hour12 = 12
         time_str = f"{hour12}:{minute:02d} {ampm}"
-        date_str = dt_local.strftime("%m/%d/%y")
+        date_str = dt_et.strftime("%m/%d/%y")
         return f"{time_str} {date_str}"
 
-    app.jinja_env.filters["fmt_local"] = fmt_local
+    app.jinja_env.filters["fmt_et"] = fmt_et
 
     @app.get("/paper")
     def paper():
