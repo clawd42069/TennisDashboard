@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local DB
+/data/tennis.db
+
+# Raw Tennis Abstract repos
+/data/ta_raw/
+
+# Env
+.env
