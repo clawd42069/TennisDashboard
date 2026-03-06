@@ -8,7 +8,9 @@ import math
 from .db import migrate, connect
 from .odds import list_sports, get_odds, get_scores, normalize_match
 
-APP_PORT = 8008
+import os
+
+APP_PORT = int(os.getenv("PORT", "8008"))
 
 
 def utc_now_iso():
@@ -338,7 +340,7 @@ def create_app():
 
 def main():
     app = create_app()
-    app.run(host="127.0.0.1", port=APP_PORT, debug=True)
+    app.run(host="0.0.0.0", port=APP_PORT, debug=False)
 
 
 if __name__ == "__main__":

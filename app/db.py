@@ -3,11 +3,19 @@ import sqlite3
 from pathlib import Path
 
 # In cloud deployments, set TENNIS_DB_PATH to a persistent disk path (e.g. /var/data/tennis.db)
-DB_PATH = Path(os.getenv("TENNIS_DB_PATH") or (Path(__file__).resolve().parents[1] / "data" / "tennis.db"))
+# If that path isn't writable (disk not mounted yet), we fall back to a local ./data/tennis.db so deploy can succeed.
+_DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "tennis.db"
+DB_PATH = Path(os.getenv("TENNIS_DB_PATH") or _DEFAULT_DB)
 
 
 def connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    global DB_PATH
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Fall back if persistent disk path isn't mounted / writable yet
+        DB_PATH = _DEFAULT_DB
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
