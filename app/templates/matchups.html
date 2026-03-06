@@ -119,15 +119,20 @@ function renderPage(){
         ${m.completed ? '<span class="pill">FINAL</span>' : ''}
         <span>${m.score ? `Score: <strong>${(m.score||[]).map(s=>`${s.name} ${s.score}`).join(' • ')}</strong>` : 'Score: n/a'}</span>
         ${m.score_last_update ? ` <span class="muted">(upd ${m.score_last_update})</span>` : ''}
-        <span class="pill">Lean: <strong>${m.lean || ''}</strong> • Tier <strong>${m.tier || ''}</strong> • <strong>${Math.round(m.confidence||0)}</strong></span>
       </div>
-      <div class="muted" style="margin-top:8px;">
-        ${(m.reasons||[]).map(r => `• ${r}`).join('<br/>')}
+
+      <div class="card" style="margin-top:10px;">
+        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+          <div style="font-weight:800; font-size:16px;">Decision</div>
+          <div class="pill">Lean: <strong>${m.lean || m.away_team || ''}</strong> • Tier <strong>${m.tier || 'C'}</strong> • <strong>${Math.round(m.confidence ?? 50)}</strong>/100</div>
+        </div>
+        <div class="muted" style="margin-top:8px;">
+          ${(m.reasons||[]).length ? (m.reasons||[]).map(r => `• ${r}`).join('<br/>') : 'No reasons available yet.'}
+        </div>
       </div>
       <div style="margin-top:10px;">
         ${(m.h2h||[]).map(o => `<div>${o.name}: <strong>${o.odds}</strong> <span class="muted">(${pct(o.implied_prob)})</span></div>`).join('')}
       </div>
-      <div class="muted" style="margin-top:8px;">${m.note}</div>
     `;
     outDiv.appendChild(box);
   });
