@@ -2,7 +2,8 @@ import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parents[1] / "data" / "tennis.db"
+# In cloud deployments, set TENNIS_DB_PATH to a persistent disk path (e.g. /var/data/tennis.db)
+DB_PATH = Path(os.getenv("TENNIS_DB_PATH") or (Path(__file__).resolve().parents[1] / "data" / "tennis.db"))
 
 
 def connect():
