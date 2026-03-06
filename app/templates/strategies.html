@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 8px 0;">Strategies + Backtests</h2>
+  <div class="muted">This tab becomes real once historical Tennis Abstract data is imported and we can backtest.</div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Strategy list (placeholder)</h3>
+  {% if strategies|length == 0 %}
+    <div class="muted">No strategies stored yet. Next step: create rule cards (inputs → filters → bet type → sizing).</div>
+  {% else %}
+    <table>
+      <thead><tr><th>Name</th><th>Description</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for s in strategies %}
+          <tr><td><strong>{{ s.name }}</strong></td><td class="muted">{{ s.description or '' }}</td><td class="muted">{{ s.created_ts }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Next build</h3>
+  <ul class="muted">
+    <li>Define 3-5 strategies as “rule cards”</li>
+    <li>Backtest on historical matches (surface + opponent-quality progression + style proxy metrics)</li>
+    <li>Track ROI, drawdown, hit-rate, CLV</li>
+  </ul>
+</div>
+{% endblock %}

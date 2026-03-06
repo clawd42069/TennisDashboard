@@ -1,0 +1,200 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 8px 0;">Bet Tracker</h2>
+  <div class="muted">Track your bets + performance. We auto-fill match + lines from Matchup Report snapshots.</div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Performance Summary</h3>
+  <div class="grid2" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="card" style="margin:0;">
+      <div class="muted">Total P/L</div>
+      <div class="{% if perf.total_pnl > 0 %}win{% elif perf.total_pnl < 0 %}loss{% else %}neutral{% endif %}" style="font-size:22px; font-weight:800;">${{ '%.2f'|format(perf.total_pnl) }}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Win rate</div>
+      <div class="{% if perf.win_rate is not none and perf.win_rate >= 0.55 %}win{% elif perf.win_rate is not none and perf.win_rate <= 0.45 %}loss{% else %}warn{% endif %}" style="font-size:22px; font-weight:800;">
+        {% if perf.win_rate is not none %}{{ '%.1f'|format(perf.win_rate*100) }}%{% else %}—{% endif %}
+        <span class="muted" style="font-weight:600;">({{ perf.wins }}/{{ perf.losses }})</span>
+      </div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Bets</div>
+      <div class="neutral" style="font-size:22px; font-weight:800;">{{ perf.total_bets }}</div>
+      <div class="muted">Settled: {{ perf.settled }}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Total units</div>
+      <div style="font-size:22px; font-weight:800;">{{ '%.2f'|format(perf.total_units) }}</div>
+      <div class="muted">$500 / unit</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;">
+    <h4 style="margin:0 0 10px 0;">By bet type</h4>
+    <table>
+      <thead><tr><th>Bet type</th><th>Bets</th><th>Win rate</th><th>P/L</th></tr></thead>
+      <tbody>
+        {% for k,v in perf.by_type.items() %}
+          {% set denom = v.wins + v.losses %}
+          <tr>
+            <td><strong>{{ k }}</strong></td>
+            <td class="muted">{{ v.bets }}</td>
+            <td class="muted">{% if denom > 0 %}{{ '%.1f'|format((v.wins/denom)*100) }}% ({{ v.wins }}/{{ v.losses }}){% else %}—{% endif %}</td>
+            <td><strong>${{ '%.2f'|format(v.pnl) }}</strong></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Add bet</h3>
+  <div class="muted">Tip: first fetch odds in Matchup Report so this dropdown is populated.</div>
+  <form method="post" action="/paper/add" style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top:10px;">
+    <select id="matchSelect" name="match_id">
+      <option value="">Match (optional)</option>
+    </select>
+    <input type="hidden" id="matchLabel" name="match_label" />
+    <input id="tournament" name="tournament" placeholder="Tournament" />
+    <select id="playerSelect" name="player" required>
+      <option value="">Player</option>
+    </select>
+    <select name="market">
+      <option value="h2h">h2h</option>
+      <option value="spreads">spreads</option>
+      <option value="totals">totals</option>
+    </select>
+
+    <input id="oddsAm" name="odds_american" placeholder="Odds e.g. -135 / +220" />
+    <input id="oddsDec" name="odds_decimal" type="hidden" />
+    <input name="units" placeholder="Units" required />
+    <select name="result">
+      <option value="OPEN">OPEN</option>
+      <option value="WIN">WIN</option>
+      <option value="LOSS">LOSS</option>
+      <option value="PUSH">PUSH</option>
+    </select>
+
+    <input name="note" placeholder="Note" style="grid-column: span 3;" />
+    <button type="submit">Add</button>
+  </form>
+</div>
+
+<script>
+let candidates = [];
+
+function fmtLocal(iso){
+  if (!iso) return '';
+  const d = new Date(iso);
+  let h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2,'0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12; if (h === 0) h = 12;
+  const time = `${h}:${m}${ampm}`;
+  const mm = (d.getMonth()+1).toString().padStart(2,'0');
+  const dd = d.getDate().toString().padStart(2,'0');
+  const yy = (d.getFullYear()%100).toString().padStart(2,'0');
+  return `${time} ${mm}/${dd}/${yy}`;
+}
+
+function decToAmerican(dec){
+  if (!dec || dec <= 1) return '';
+  if (dec >= 2) return `+${Math.round((dec-1)*100)}`;
+  return `${Math.round(-100/(dec-1))}`;
+}
+
+async function loadCandidates(){
+  const r = await fetch('/api/paper_candidates');
+  const j = await r.json();
+  candidates = j.matches || [];
+
+  const ms = document.getElementById('matchSelect');
+  ms.innerHTML = '<option value="">Match (optional)</option>';
+
+  // sort by commence time
+  candidates.sort((a,b)=> (Date.parse(a.commence_time||'')||0) - (Date.parse(b.commence_time||'')||0));
+
+  candidates.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.match_id;
+    opt.textContent = `${fmtLocal(m.commence_time)} — ${m.away_team} vs ${m.home_team}`;
+    opt.dataset.tournament = m.tournament || '';
+    ms.appendChild(opt);
+  });
+
+  ms.addEventListener('change', () => {
+    const mid = ms.value;
+    const m = candidates.find(x => x.match_id === mid);
+
+    // tournament + match label
+    document.getElementById('tournament').value = m ? (m.tournament || '') : '';
+    document.getElementById('matchLabel').value = m ? `${m.away_team} vs ${m.home_team}` : '';
+
+    // players
+    const ps = document.getElementById('playerSelect');
+    ps.innerHTML = '<option value="">Player</option>';
+    if (m){
+      (m.outcomes||[]).forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.name;
+        opt.textContent = o.name;
+        opt.dataset.dec = o.odds_decimal || '';
+        ps.appendChild(opt);
+      });
+    }
+  });
+
+  const ps = document.getElementById('playerSelect');
+  ps.addEventListener('change', () => {
+    const opt = ps.selectedOptions[0];
+    if (!opt) return;
+    const dec = parseFloat(opt.dataset.dec);
+    if (dec){
+      document.getElementById('oddsDec').value = dec;
+      document.getElementById('oddsAm').value = decToAmerican(dec);
+    }
+  });
+}
+
+loadCandidates();
+</script>
+
+<div class="card">
+  <h3 style="margin-top:0;">Recent bets</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Units</th><th>Result</th><th>P/L</th><th>Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in bets %}
+        <tr>
+          <td class="muted">{{ b.ts|fmt_local }}</td>
+          <td>{{ b.tournament or '' }}</td>
+          <td class="muted">{{ b.match_label or b.match_id or '' }}</td>
+          <td><strong>{{ b.player }}</strong></td>
+          <td class="muted">{{ b.market }}</td>
+          <td><strong>{{ b.odds_american or '' }}</strong></td>
+          <td><strong>{{ b.units }}</strong></td>
+          {% set res = b.result or 'OPEN' %}
+          <td class="muted {% if res == 'WIN' %}win{% elif res == 'LOSS' %}loss{% endif %}">{{ res }}</td>
+          <td class="{% if res == 'WIN' %}win{% elif res == 'LOSS' %}loss{% endif %}"><strong>
+            {% if b.pnl_dollars is not none %}
+              ${{ '%.2f'|format(b.pnl_dollars) }}
+            {% elif b.pnl_units is not none %}
+              {{ '%.2f'|format(b.pnl_units) }}
+            {% else %}
+              
+            {% endif %}
+          </strong></td>
+          <td class="muted">{{ b.note or '' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,176 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 8px 0;">Matchup Report</h2>
+  <div class="muted">Live odds + raw data + outputs. Style/progression/fatigue gets wired once Tennis Abstract DB import is done.</div>
+</div>
+
+<div class="card grid2">
+  <div>
+    <h3 style="margin-top:0;">1) Choose tournament feed</h3>
+    <div class="muted">We pull active tennis feeds from The Odds API (e.g., Indian Wells). Then auto-refresh every 60s.</div>
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap;">
+      <button onclick="loadSports()">Load tennis feeds</button>
+      <select id="sportKey"></select>
+      <select id="markets">
+        <option value="h2h">h2h (moneyline)</option>
+        <option value="h2h,spreads,totals">h2h + spreads + totals</option>
+      </select>
+      <button onclick="fetchOdds()">Fetch odds now</button>
+    </div>
+    <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
+  </div>
+
+  <div>
+    <h3 style="margin-top:0;">2) Outputs (odds-only for now)</h3>
+    <div class="muted">We show implied probabilities from the first bookmaker, per match.</div>
+    <div id="outputsMeta" class="muted" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+    <h3 style="margin:0;">Outputs</h3>
+    <div class="pager">
+      <button onclick="prevPage()">Prev</button>
+      <div class="muted">Page <span id="pageNum">1</span></div>
+      <button onclick="nextPage()">Next</button>
+      <div class="muted">Showing <span id="showingCount">0</span> / <span id="totalCount">0</span></div>
+    </div>
+  </div>
+  <div id="outputs"></div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Raw JSON (first 1 match)</h3>
+  <div class="muted">For debugging and transparency.</div>
+  <pre id="raw"></pre>
+</div>
+
+<script>
+let refreshTimer = null;
+let lastOutputs = [];
+let page = 1;
+const pageSize = 8;
+
+async function loadSports(){
+  const el = document.getElementById('sportsMeta');
+  el.textContent = 'Loading…';
+  const r = await fetch('/api/tennis_sports');
+  const j = await r.json();
+
+  const sel = document.getElementById('sportKey');
+  sel.innerHTML = '';
+  (j.tennis || []).filter(s => s.active).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.key;
+    opt.textContent = `${s.key} — ${s.description}`;
+    sel.appendChild(opt);
+  });
+
+  el.textContent = `Found ${(j.tennis||[]).length} tennis feeds. Requests remaining: ${j.requests_remaining ?? 'n/a'}`;
+}
+
+function pct(x){
+  if (x === null || x === undefined) return '';
+  return (x*100).toFixed(1) + '%';
+}
+
+function fmtLocal(iso){
+  if (!iso) return '';
+  const d = new Date(iso);
+  // time
+  let h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2,'0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12; if (h === 0) h = 12;
+  const time = `${h}:${m}${ampm}`;
+  // date mm/dd/yy
+  const mm = (d.getMonth()+1).toString().padStart(2,'0');
+  const dd = d.getDate().toString().padStart(2,'0');
+  const yy = (d.getFullYear()%100).toString().padStart(2,'0');
+  return `${time} ${mm}/${dd}/${yy}`;
+}
+
+function renderPage(){
+  const outDiv = document.getElementById('outputs');
+  outDiv.innerHTML = '';
+
+  const total = lastOutputs.length;
+  document.getElementById('totalCount').textContent = total;
+  const maxPage = Math.max(1, Math.ceil(total / pageSize));
+  page = Math.min(Math.max(1, page), maxPage);
+  document.getElementById('pageNum').textContent = page;
+
+  const start = (page - 1) * pageSize;
+  const slice = lastOutputs.slice(start, start + pageSize);
+  document.getElementById('showingCount').textContent = slice.length;
+
+  const nowMs = Date.now();
+
+  slice.forEach(m => {
+    const box = document.createElement('div');
+    const commenceMs = m.commence_time ? Date.parse(m.commence_time) : null;
+    const isLive = commenceMs !== null && commenceMs <= nowMs;
+    box.className = isLive ? 'card live' : 'card';
+
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+        <div><strong>${m.away_team}</strong> vs <strong>${m.home_team}</strong> ${isLive ? '<span class="tag-live">LIVE</span>' : ''}</div>
+        <div class="muted">${fmtLocal(m.commence_time)} • ${m.bookmaker || ''}</div>
+      </div>
+      <div class="muted" style="margin-top:6px;">
+        ${m.completed ? '<span class="pill">FINAL</span>' : ''}
+        ${m.score ? `Score: <strong>${(m.score||[]).map(s=>`${s.name} ${s.score}`).join(' • ')}</strong>` : 'Score: n/a'}
+        ${m.score_last_update ? ` <span class="muted">(upd ${m.score_last_update})</span>` : ''}
+      </div>
+      <div style="margin-top:10px;">
+        ${(m.h2h||[]).map(o => `<div>${o.name}: <strong>${o.odds}</strong> <span class="muted">(${pct(o.implied_prob)})</span></div>`).join('')}
+      </div>
+      <div class="muted" style="margin-top:8px;">${m.note}</div>
+    `;
+    outDiv.appendChild(box);
+  });
+}
+
+function nextPage(){ page += 1; renderPage(); }
+function prevPage(){ page -= 1; renderPage(); }
+
+async function fetchOdds(){
+  const sportKey = document.getElementById('sportKey').value;
+  const markets = document.getElementById('markets').value;
+  if (!sportKey){
+    document.getElementById('outputsMeta').innerHTML = '<span class="err">Pick a sport feed first.</span>';
+    return;
+  }
+
+  const meta = document.getElementById('outputsMeta');
+  meta.textContent = 'Fetching…';
+
+  const r = await fetch(`/api/odds?sport_key=${encodeURIComponent(sportKey)}&markets=${encodeURIComponent(markets)}`);
+  const j = await r.json();
+  if (j.error){
+    meta.innerHTML = `<span class="err">${j.error}</span>`;
+    return;
+  }
+
+  meta.textContent = `Fetched ${j.count} matches • remaining: ${j.requests_remaining ?? 'n/a'} • updated: ${j.ts}`;
+
+  lastOutputs = j.outputs || [];
+  page = 1;
+  renderPage();
+
+  // raw
+  const raw = (j.raw && j.raw.length) ? j.raw[0] : {};
+  document.getElementById('raw').textContent = JSON.stringify(raw, null, 2);
+
+  // auto refresh
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(fetchOdds, 60000);
+}
+
+// Try load sports on first render
+loadSports();
+</script>
+
+{% endblock %}

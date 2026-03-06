@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tennis Analyst — Dashboard v2</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; background: #0b1220; color: #e7eefc; }
+    a { color: #7dd3fc; text-decoration: none; }
+    .top { display:flex; gap:16px; padding: 14px 18px; align-items:center; border-bottom: 1px solid rgba(255,255,255,.08); position: sticky; top:0; background:#0b1220; }
+    .top .brand { font-weight: 700; }
+    .top .nav { display:flex; gap: 12px; }
+    .top .nav a { padding: 6px 10px; border-radius: 10px; }
+    .top .nav a.active { background: rgba(125,211,252,.12); border: 1px solid rgba(125,211,252,.24); }
+    .wrap { max-width: 1600px; width: calc(100vw - 36px); margin: 0 auto; padding: 18px; }
+    .card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 14px; margin: 14px 0; }
+    .card.live { border-color: rgba(74,222,128,.45); box-shadow: 0 0 0 1px rgba(74,222,128,.25) inset; }
+    .tag-live { display:inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(74,222,128,.12); border: 1px solid rgba(74,222,128,.25); color:#4ade80; font-size: 12px; }
+    .pager { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px){ .grid2 { grid-template-columns: 1fr; } }
+    table { width:100%; border-collapse: collapse; }
+    th, td { padding: 10px 10px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+    th { text-align:left; color:#b7c6e6; font-weight: 600; }
+    input, select, button, textarea { background: rgba(255,255,255,.06); color:#e7eefc; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: 8px 10px; }
+    button { cursor:pointer; }
+    .muted { color:#9fb0d3; }
+    .win { color:#4ade80; font-weight:700; }
+    .loss { color:#fb7185; font-weight:700; }
+    .neutral { color:#e7eefc; font-weight:700; }
+    .warn { color:#fbbf24; font-weight:700; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(125,211,252,.12); border: 1px solid rgba(125,211,252,.24); color:#7dd3fc; font-size: 12px; }
+    .err { color: #fb7185; }
+    pre { white-space: pre-wrap; word-break: break-word; background: rgba(0,0,0,.25); padding: 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,.08);} 
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">🎾 Tennis Analyst</div>
+    <div class="nav">
+      <a href="/matchups" class="{% if request.path.startswith('/matchups') %}active{% endif %}">Matchup Report</a>
+      <a href="/paper" class="{% if request.path.startswith('/paper') %}active{% endif %}">Bet Tracker</a>
+      <a href="/strategies" class="{% if request.path.startswith('/strategies') %}active{% endif %}">Strategies</a>
+      <a href="/player" class="{% if request.path.startswith('/player') %}active{% endif %}">Player</a>
+    </div>
+    <div style="margin-left:auto" class="muted">Local-first • Live updates</div>
+  </div>
+
+  <div class="wrap">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>
