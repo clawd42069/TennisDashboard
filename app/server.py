@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
+import threading
+import subprocess
+import sys
 
 import math
 
@@ -22,7 +25,35 @@ def utc_now_iso():
 
 def create_app():
     app = Flask(__name__)
+    app.jinja_env.globals['env'] = os.environ
     migrate()
+
+    ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+    _bootstrap = {"running": False, "status": "idle", "last": None}
+
+    def _auth_ok():
+        if not ADMIN_TOKEN:
+            return False
+        token = request.args.get("token") or request.headers.get("Authorization")
+        return token == ADMIN_TOKEN
+
+    def _run_bootstrap():
+        _bootstrap["running"] = True
+        _bootstrap["status"] = "running"
+        _bootstrap["last"] = utc_now_iso()
+        try:
+            root = os.path.dirname(os.path.dirname(__file__))  # /opt/render/project/src/app -> /opt/render/project/src
+            root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            py = sys.executable
+            # import ATP + build features
+            subprocess.check_call([py, os.path.join(root, "scripts", "import_tennis_abstract.py"), "--tour", "atp", "--since-year", "2015"])
+            subprocess.check_call([py, os.path.join(root, "scripts", "build_features_atp.py"), "--since-year", "2015", "--recent-n", "10"])
+            _bootstrap["status"] = "ok"
+        except Exception as e:
+            _bootstrap["status"] = f"error: {e}"
+        finally:
+            _bootstrap["running"] = False
+            _bootstrap["last"] = utc_now_iso()
 
     @app.get("/")
     def index():
@@ -210,6 +241,14 @@ def create_app():
         return render_template("player.html")
 
     # ---------- API ----------
+
+    @app.get("/health")
+    def health():
+        return jsonify({
+            "ok": True,
+            "commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+            "db_path": os.getenv("TENNIS_DB_PATH"),
+        })
 
     @app.get("/api/tennis_sports")
     def api_tennis_sports():

@@ -48,6 +48,9 @@
 
   <div class="wrap">
     {% block content %}{% endblock %}
+    <div class="muted" style="margin:18px 2px 0; font-size:12px; opacity:.8;">
+      build: {{ env.RENDER_GIT_COMMIT or env.GIT_COMMIT or 'local' }} • db: {{ env.TENNIS_DB_PATH or 'data/tennis.db' }}
+    </div>
   </div>
 </body>
 </html>
