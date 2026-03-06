@@ -80,16 +80,18 @@ def rate_match(
     prog_score, prog_reasons = score_progression(away_prog, home_prog)
     surf_score, surf_reasons = score_surface(away_surf_win, home_surf_win, surface)
 
-    conf = clamp((prog_score * w_progression) + (surf_score * w_surface), 0, 100)
+    score = clamp((prog_score * w_progression) + (surf_score * w_surface), 0, 100)
 
-    lean = away if conf >= 50 else home
-    # Recenter confidence around 50: distance from 50 indicates strength
-    strength = abs(conf - 50) * 2  # 0..100
-    tier = tier_from_conf(50 + strength / 2)
+    # always show a lean
+    lean = away if score >= 50 else home
+
+    # confidence expresses distance from 50
+    confidence = clamp(50 + abs(score - 50), 50, 100)
+    tier = tier_from_conf(confidence)
 
     reasons = []
     reasons.extend(prog_reasons)
     reasons.extend(surf_reasons)
     reasons.append(f"Weights: {int(w_progression*100)}/{int(w_surface*100)} (progression/surface).")
 
-    return Rating(lean=lean, confidence=float(50 + strength / 2), tier=tier, reasons=reasons[:3])
+    return Rating(lean=lean, confidence=float(confidence), tier=tier, reasons=reasons[:3])

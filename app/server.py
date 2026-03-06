@@ -8,6 +8,8 @@ import math
 
 from .db import migrate, connect
 from .odds import list_sports, get_odds, get_scores, normalize_match
+from .ratings import rate_match
+from .ratings import rate_match
 
 import os
 
@@ -267,6 +269,28 @@ def create_app():
 
         return jsonify({"ts": ts, "matches": matches})
 
+    def infer_surface(sport_key: str) -> str | None:
+        # v1 heuristic; we can upgrade later with tournament metadata.
+        if "indian_wells" in (sport_key or ""):
+            return "Hard"
+        if "wimbledon" in (sport_key or ""):
+            return "Grass"
+        if "roland" in (sport_key or "") or "french_open" in (sport_key or ""):
+            return "Clay"
+        return None
+
+    def player_id_from_name(conn, name: str | None):
+        if not name:
+            return None
+        # Exact match first
+        row = conn.execute(
+            "SELECT player_id FROM ta_players WHERE (first_name || ' ' || last_name) = ? LIMIT 1",
+            (name,),
+        ).fetchone()
+        if row:
+            return row["player_id"]
+        return None
+
     @app.get("/api/odds")
     def api_odds():
         sport_key = request.args.get("sport_key")
@@ -276,6 +300,7 @@ def create_app():
         odds, headers = get_odds(sport_key=sport_key, markets=markets)
         scores, _score_headers = get_scores(sport_key=sport_key, days_from=3)
         scores_by_id = {s.get("id"): s for s in (scores or []) if s.get("id")}
+        surface = infer_surface(sport_key)
 
         # store snapshot
         conn = connect()
