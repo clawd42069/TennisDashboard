@@ -339,10 +339,15 @@ def create_app():
         checked = 0
         errors = []
         for sport_key in sport_keys:
+            scores_sport_key = sport_key
+            if sport_key.startswith("tennis_atp_"):
+                scores_sport_key = "tennis_atp"
+            elif sport_key.startswith("tennis_wta_"):
+                scores_sport_key = "tennis_wta"
             try:
-                events, _headers = get_scores(sport_key=sport_key, days_from=days_from)
+                events, _headers = get_scores(sport_key=scores_sport_key, days_from=days_from)
             except Exception as e:
-                errors.append({"sport_key": sport_key, "error": str(e)})
+                errors.append({"sport_key": sport_key, "scores_sport_key": scores_sport_key, "error": str(e)})
                 continue
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
 
