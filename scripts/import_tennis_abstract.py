@@ -105,10 +105,16 @@ def upsert_players(conn, repo_dir: Path):
     rows = list(iter_csv(player_file))
     cur = conn.cursor()
     for r in rows:
-        # player_id,first_name,last_name,hand,birth_date,country_code,height
+        # Modern TA schema uses: name_first,name_last,hand,dob,ioc,height
         pid = int(r["player_id"])
         height = r.get("height")
-        height_cm = int(height) if height and height.isdigit() else None
+        height_cm = int(height) if height and str(height).isdigit() else None
+
+        first = r.get("first_name") or r.get("name_first")
+        last = r.get("last_name") or r.get("name_last")
+        dob = r.get("birth_date") or r.get("dob")
+        ioc = r.get("country_code") or r.get("ioc")
+
         cur.execute(
             """
             INSERT INTO ta_players (player_id, first_name, last_name, hand, birth_date, country_code, height_cm)
@@ -123,11 +129,11 @@ def upsert_players(conn, repo_dir: Path):
             """,
             (
                 pid,
-                r.get("first_name"),
-                r.get("last_name"),
+                first,
+                last,
                 r.get("hand"),
-                r.get("birth_date"),
-                r.get("country_code"),
+                dob,
+                ioc,
                 height_cm,
             ),
         )

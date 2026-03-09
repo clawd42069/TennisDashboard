@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import connect, migrate
+from app.elo import build_atp_surface_elo
 
 
 def main():
@@ -109,13 +110,18 @@ def main():
 
     conn.commit()
 
+    # Build/refresh surface Elo cache (used by candidate engine)
+    build_atp_surface_elo(conn, since_year=args.since_year)
+
     # basic stats
     surf_rows = conn.execute("SELECT COUNT(*) c FROM atp_surface_splits").fetchone()[0]
     oppq_rows = conn.execute("SELECT COUNT(*) c FROM atp_recent_oppq_10").fetchone()[0]
+    elo_rows = conn.execute("SELECT COUNT(*) c FROM atp_surface_elo").fetchone()[0]
     conn.close()
 
     print(f"Built atp_surface_splits rows: {surf_rows}")
     print(f"Built atp_recent_oppq_10 rows: {oppq_rows}")
+    print(f"Built atp_surface_elo rows: {elo_rows}")
 
 
 if __name__ == "__main__":

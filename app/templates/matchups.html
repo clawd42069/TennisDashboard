@@ -22,15 +22,23 @@
   </div>
 
   <div>
-    <h3 style="margin-top:0;">2) Outputs (odds-only for now)</h3>
-    <div class="muted">We show implied probabilities from the first bookmaker, per match.</div>
+    <h3 style="margin-top:0;">2) Ranked Candidates (v0)</h3>
+    <div class="muted">This is the new pipeline: Top-N candidates ranked by EV_adj (EV × confidence). Elo/overlays come next.</div>
     <div id="outputsMeta" class="muted" style="margin-top:10px;"></div>
   </div>
 </div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-    <h3 style="margin:0;">Outputs</h3>
+    <h3 style="margin:0;">Actionable (filtered)</h3>
+    <div class="muted">Temporary filter: EV_adj &gt; 0 and confidence ≥ 0.55</div>
+  </div>
+  <div id="actionable"></div>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+    <h3 style="margin:0;">Debug (Top N)</h3>
     <div class="pager">
       <button onclick="prevPage()">Prev</button>
       <div class="muted">Page <span id="pageNum">1</span></div>
@@ -46,6 +54,7 @@
 <script>
 let refreshTimer = null;
 let lastOutputs = [];
+let lastActionable = [];
 let page = 1;
 const pageSize = 8;
 
@@ -88,6 +97,41 @@ function fmtLocal(iso){
   return `${time} ${mm}/${dd}/${yy}`;
 }
 
+function pill(text){
+  return `<span class="pill">${text}</span>`;
+}
+
+function renderActionable(){
+  const div = document.getElementById('actionable');
+  div.innerHTML = '';
+  if (!lastActionable.length){
+    div.innerHTML = `<div class="muted">No actionable candidates right now (v0 filter).</div>`;
+    return;
+  }
+
+  lastActionable.forEach(c => {
+    const box = document.createElement('div');
+    box.className = 'card';
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+        <div><strong>${c.side}</strong> (${c.market_type}) <span class="muted">in</span> ${c.player_a} vs ${c.player_b}</div>
+        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
+      </div>
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${pill(`Price <strong>${c.price_decimal ?? ''}</strong> (${c.price_american ?? ''})`)}
+        ${pill(`p <strong>${(c.p_final ?? 0).toFixed(3)}</strong> (q ${(c.q_implied ?? 0).toFixed(3)})`)}
+        ${pill(`EV <strong>${(c.ev ?? 0).toFixed(3)}</strong>`)}
+        ${pill(`Conf <strong>${Math.round((c.confidence ?? 0)*100)}</strong>/100`)}
+        ${pill(`EV_adj <strong>${(c.ev_adj ?? 0).toFixed(3)}</strong>`)}
+      </div>
+      <div class="muted" style="margin-top:8px;">
+        ${(c.reasons||[]).slice(0,3).map(r => `• ${r}`).join('<br/>')}
+      </div>
+    `;
+    div.appendChild(box);
+  });
+}
+
 function renderPage(){
   const outDiv = document.getElementById('outputs');
   outDiv.innerHTML = '';
@@ -102,36 +146,25 @@ function renderPage(){
   const slice = lastOutputs.slice(start, start + pageSize);
   document.getElementById('showingCount').textContent = slice.length;
 
-  const nowMs = Date.now();
-
-  slice.forEach(m => {
+  slice.forEach(c => {
     const box = document.createElement('div');
-    const commenceMs = m.commence_time ? Date.parse(m.commence_time) : null;
-    const isLive = commenceMs !== null && commenceMs <= nowMs;
-    box.className = isLive ? 'card live' : 'card';
+    box.className = 'card';
 
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-        <div><strong>${m.away_team}</strong> vs <strong>${m.home_team}</strong> ${isLive ? '<span class="tag-live">LIVE</span>' : ''}</div>
-        <div class="muted">${fmtLocal(m.commence_time)} • ${m.bookmaker || ''}</div>
+        <div><strong>${c.side}</strong> (${c.market_type}) <span class="muted">in</span> ${c.player_a} vs ${c.player_b}</div>
+        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
       </div>
-      <div class="muted" style="margin-top:6px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        ${m.completed ? '<span class="pill">FINAL</span>' : ''}
-        <span>${m.score ? `Score: <strong>${(m.score||[]).map(s=>`${s.name} ${s.score}`).join(' • ')}</strong>` : 'Score: n/a'}</span>
-        ${m.score_last_update ? ` <span class="muted">(upd ${m.score_last_update})</span>` : ''}
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${pill(`Price <strong>${c.price_decimal ?? ''}</strong> (${c.price_american ?? ''})`)}
+        ${pill(`p0 <strong>${(c.p0 ?? 0).toFixed(3)}</strong> • p <strong>${(c.p_final ?? 0).toFixed(3)}</strong>`)}
+        ${pill(`q <strong>${(c.q_implied ?? 0).toFixed(3)}</strong>`)}
+        ${pill(`EV <strong>${(c.ev ?? 0).toFixed(3)}</strong>`)}
+        ${pill(`Conf <strong>${Math.round((c.confidence ?? 0)*100)}</strong>/100`)}
+        ${pill(`EV_adj <strong>${(c.ev_adj ?? 0).toFixed(3)}</strong>`)}
       </div>
-
-      <div class="card" style="margin-top:10px;">
-        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-          <div style="font-weight:800; font-size:16px;">Decision</div>
-          <div class="pill">Lean: <strong>${m.lean || m.away_team || ''}</strong> • Tier <strong>${m.tier || 'C'}</strong> • <strong>${Math.round(m.confidence ?? 50)}</strong>/100</div>
-        </div>
-        <div class="muted" style="margin-top:8px;">
-          ${(m.reasons||[]).length ? (m.reasons||[]).map(r => `• ${r}`).join('<br/>') : 'No reasons available yet.'}
-        </div>
-      </div>
-      <div style="margin-top:10px;">
-        ${(m.h2h||[]).map(o => `<div>${o.name}: <strong>${o.odds}</strong> <span class="muted">(${pct(o.implied_prob)})</span></div>`).join('')}
+      <div class="muted" style="margin-top:8px;">
+        ${(c.reasons||[]).slice(0,3).map(r => `• ${r}`).join('<br/>')}
       </div>
     `;
     outDiv.appendChild(box);
@@ -159,10 +192,12 @@ async function fetchOdds(){
     return;
   }
 
-  meta.textContent = `Fetched ${j.count} matches • remaining: ${j.requests_remaining ?? 'n/a'} • updated: ${j.ts}`;
+  meta.textContent = `Fetched ${j.count} matches • remaining: ${j.requests_remaining ?? 'n/a'} • updated: ${j.ts} • snapshot: ${j.snapshot_id ?? 'n/a'}`;
 
-  lastOutputs = j.outputs || [];
+  lastActionable = j.candidates_actionable || [];
+  lastOutputs = j.candidates_debug || [];
   page = 1;
+  renderActionable();
   renderPage();
 
   // raw section removed

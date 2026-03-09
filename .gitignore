@@ -2,11 +2,17 @@
 __pycache__/
 *.pyc
 
-# Local DB
+# Local DB + local data dirs
+/data/*
+!/data/.gitkeep
+
+# (legacy explicit ignores kept for clarity)
 /data/tennis.db
 
 # Raw Tennis Abstract repos
 /data/ta_raw/
+# Style repos (MCP, point-by-point)
+/data/style_raw/
 
 # Env
 .env

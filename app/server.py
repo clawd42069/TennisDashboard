@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -12,7 +14,9 @@ import math
 from .db import migrate, connect
 from .odds import list_sports, get_odds, get_scores, normalize_match
 from .ratings import rate_match
-from .ratings import rate_match
+
+from .engine import generate_ml_candidates
+from .modeling import dec_to_american
 
 import os
 
@@ -42,10 +46,9 @@ def create_app():
         _bootstrap["status"] = "running"
         _bootstrap["last"] = utc_now_iso()
         try:
-            root = os.path.dirname(os.path.dirname(__file__))  # /opt/render/project/src/app -> /opt/render/project/src
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
             py = sys.executable
-            # import ATP + build features
+            # import ATP + build features (includes surface Elo build)
             subprocess.check_call([py, os.path.join(root, "scripts", "import_tennis_abstract.py"), "--tour", "atp", "--since-year", "2015"])
             subprocess.check_call([py, os.path.join(root, "scripts", "build_features_atp.py"), "--since-year", "2015", "--recent-n", "10"])
             _bootstrap["status"] = "ok"
@@ -260,6 +263,24 @@ def create_app():
             "requests_used": headers.get("x-requests-used"),
         })
 
+    # ---------- Admin bootstrap (historical import + feature build) ----------
+
+    @app.get("/admin/bootstrap/status")
+    def admin_bootstrap_status():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return jsonify({"ok": True, **_bootstrap})
+
+    @app.post("/admin/bootstrap/run")
+    def admin_bootstrap_run():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        if _bootstrap.get("running"):
+            return jsonify({"ok": True, **_bootstrap})
+        t = threading.Thread(target=_run_bootstrap, daemon=True)
+        t.start()
+        return jsonify({"ok": True, **_bootstrap})
+
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
         """Return a compact list of upcoming/live matches from most recent odds snapshot(s).
@@ -308,6 +329,101 @@ def create_app():
 
         return jsonify({"ts": ts, "matches": matches})
 
+    @app.get("/api/candidates/latest")
+    def api_candidates_latest():
+        """Fetch latest ranked candidates from DB (no Odds API call).
+
+        Params:
+          view: actionable|debug|all (default all)
+          limit: int (default 50)
+        """
+        view = (request.args.get("view") or "all").lower()
+        limit = int(request.args.get("limit") or 50)
+        limit = max(1, min(500, limit))
+
+        conn = connect()
+        snap = conn.execute("SELECT id, ts, sport_key, markets, regions, top_n, model_version FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        if not snap:
+            conn.close()
+            return jsonify({"snapshot": None, "candidates": [], "note": "No snapshots yet. Call /api/odds first."})
+
+        where = ""
+        params = [snap["id"]]
+        if view == "actionable":
+            where = " AND actionable = 1"
+        elif view == "debug":
+            where = ""
+        elif view == "all":
+            where = ""
+        else:
+            conn.close()
+            return jsonify({"error": "invalid view (use actionable|debug|all)"}), 400
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ranked_candidates
+            WHERE snapshot_id = ?
+            """ + where + "\nORDER BY ev_adj DESC NULLS LAST, confidence DESC NULLS LAST\nLIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        conn.close()
+
+        return jsonify({
+            "snapshot": dict(snap),
+            "count": len(rows),
+            "candidates": [dict(r) for r in rows],
+        })
+
+    @app.get("/api/actionables")
+    def api_actionables():
+        """Return captured daily actionables for a given ET date.
+
+        Params:
+          date: YYYY-MM-DD (defaults to latest date_et)
+        """
+        date_et = (request.args.get("date") or "").strip() or None
+        conn = connect()
+        if not date_et:
+            row = conn.execute("SELECT date_et FROM daily_actionables ORDER BY date_et DESC LIMIT 1").fetchone()
+            date_et = row["date_et"] if row else None
+        if not date_et:
+            conn.close()
+            return jsonify({"date_et": None, "count": 0, "rows": []})
+
+        rows = conn.execute(
+            "SELECT * FROM daily_actionables WHERE date_et = ? ORDER BY ev_adj DESC NULLS LAST",
+            (date_et,),
+        ).fetchall()
+        conn.close()
+        return jsonify({"date_et": date_et, "count": len(rows), "rows": [dict(r) for r in rows]})
+
+    @app.get("/api/style/player")
+    def api_style_player():
+        """Lookup a player's MCP style profile (men).
+
+        Params:
+          q: player name (substring)
+          exact: 1 to require exact match
+        """
+        q = (request.args.get("q") or "").strip()
+        exact = (request.args.get("exact") or "0") == "1"
+        if not q:
+            return jsonify({"error": "q required"}), 400
+
+        conn = connect()
+        if exact:
+            row = conn.execute("SELECT * FROM style_mcp_player_m WHERE player = ?", (q,)).fetchone()
+            conn.close()
+            return jsonify({"match": dict(row) if row else None})
+
+        rows = conn.execute(
+            "SELECT * FROM style_mcp_player_m WHERE player LIKE ? ORDER BY matches DESC LIMIT 20",
+            (f"%{q}%",),
+        ).fetchall()
+        conn.close()
+        return jsonify({"count": len(rows), "matches": [dict(r) for r in rows]})
+
     def infer_surface(sport_key: str) -> str | None:
         # v1 heuristic; we can upgrade later with tournament metadata.
         if "indian_wells" in (sport_key or ""):
@@ -332,28 +448,170 @@ def create_app():
 
     @app.get("/api/odds")
     def api_odds():
+        """Fetch odds, store raw snapshot, and compute/store ranked candidates.
+
+        v0 behavior:
+        - ML (h2h) only candidate generation.
+        - Candidate baseline is placeholder until Elo/serve/return/recency overlays are wired.
+
+        Returns both:
+        - legacy `outputs` (implied probs from first bookmaker)
+        - new `candidates_debug` + `candidates_actionable`
+        """
         sport_key = request.args.get("sport_key")
         markets = request.args.get("markets", "h2h")
+        regions = request.args.get("regions", "us,uk,eu")
+        top_n = int(request.args.get("top_n") or os.getenv("TOP_N") or 10)
+        refresh_interval_sec = int(os.getenv("REFRESH_INTERVAL_SEC") or 120)
+        model_version = os.getenv("MODEL_VERSION")
+
         if not sport_key:
             return jsonify({"error": "sport_key required"}), 400
-        odds, headers = get_odds(sport_key=sport_key, markets=markets)
-        scores, _score_headers = get_scores(sport_key=sport_key, days_from=3)
+
+        try:
+            odds, headers = get_odds(sport_key=sport_key, markets=markets, regions=regions)
+            scores, _score_headers = get_scores(sport_key=sport_key, days_from=3)
+        except Exception as e:
+            return jsonify({
+                "error": "odds_api_error",
+                "message": str(e),
+                "sport_key": sport_key,
+                "hint": "Call /api/tennis_sports to see valid keys (ATP-only use the tennis_atp_* keys).",
+            }), 400
         scores_by_id = {s.get("id"): s for s in (scores or []) if s.get("id")}
         surface = infer_surface(sport_key)
 
-        # store snapshot
         conn = connect()
         ts = utc_now_iso()
+
+        # store legacy raw snapshot (per match)
         for m in odds:
             mid = normalize_match(m)
             conn.execute(
                 "INSERT INTO odds_snapshots (ts, sport_key, match_id, payload_json) VALUES (?, ?, ?, ?)",
                 (ts, sport_key, mid, json.dumps(m)),
             )
+
+        # store v2 snapshot (one row per refresh)
+        cur = conn.execute(
+            """
+            INSERT INTO snapshots (ts, tour, sport_key, markets, regions, top_n, refresh_interval_sec, model_version, slate_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ts,
+                "ATP",
+                sport_key,
+                markets,
+                regions,
+                top_n,
+                refresh_interval_sec,
+                model_version,
+                None,
+            ),
+        )
+        snapshot_id = cur.lastrowid
+
+        # ---------------- Candidate generation (v0: ML only) ----------------
+        candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=top_n)
+
+        # Actionable filter (happy-medium defaults):
+        # - avoid ultra-longshots until we have richer features + backtests
+        # - require real edge (EV) AND decent confidence
+        MAX_ODDS_DEC = float(os.getenv("ACTIONABLE_MAX_ODDS_DEC") or 12.0)
+        MIN_CONF = float(os.getenv("ACTIONABLE_MIN_CONF") or 0.62)
+        MIN_EV = float(os.getenv("ACTIONABLE_MIN_EV") or 0.02)  # +2% per 1u risk
+        MIN_EV_ADJ = float(os.getenv("ACTIONABLE_MIN_EV_ADJ") or 0.02)
+
+        actionable = []
+        for c in candidates:
+            if c.price_decimal is None or c.ev is None or c.ev_adj is None:
+                continue
+            if c.price_decimal > MAX_ODDS_DEC:
+                continue
+            if (c.confidence or 0) < MIN_CONF:
+                continue
+            if c.ev < MIN_EV:
+                continue
+            if c.ev_adj < MIN_EV_ADJ:
+                continue
+            actionable.append(c)
+
+        def cand_to_dict(c):
+            return {
+                "match_id": c.match_id,
+                "commence_time": c.commence_time,
+                "tournament": c.tournament,
+                "surface": c.surface or surface,
+                "player_a": c.player_a,
+                "player_b": c.player_b,
+                "market_type": c.market_type,
+                "side": c.side,
+                "line": c.line,
+                "price_decimal": c.price_decimal,
+                "price_american": dec_to_american(c.price_decimal),
+                "book": c.book,
+                "p0": c.p0,
+                "p_final": c.p_final,
+                "q_implied": c.q_implied,
+                "ev": c.ev,
+                "confidence": c.confidence,
+                "ev_adj": c.ev_adj,
+                "reasons": c.reasons,
+            }
+
+        # persist candidates
+        created_at = ts
+        for c in candidates:
+            conn.execute(
+                """
+                INSERT INTO ranked_candidates (
+                  snapshot_id, created_at,
+                  match_id, commence_time, tournament, surface, player_a, player_b,
+                  market_type, side, line, price_decimal, price_american, book,
+                  p0, p_final, q_implied, ev, confidence, ev_adj,
+                  delta_elo_surface, delta_sr, delta_recency, delta_z_raw, delta_z_capped,
+                  matchup_flags_json,
+                  view_mode, actionable, units_suggested
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    snapshot_id,
+                    created_at,
+                    c.match_id,
+                    c.commence_time,
+                    c.tournament,
+                    c.surface or surface,
+                    c.player_a,
+                    c.player_b,
+                    c.market_type,
+                    c.side,
+                    c.line,
+                    c.price_decimal,
+                    dec_to_american(c.price_decimal),
+                    c.book,
+                    c.p0,
+                    c.p_final,
+                    c.q_implied,
+                    c.ev,
+                    c.confidence,
+                    c.ev_adj,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "debug",
+                    1 if c in actionable else 0,
+                    None,
+                ),
+            )
+
         conn.commit()
         conn.close()
 
-        # compute simple outputs: implied probs from first bookmaker h2h
+        # ---------------- Legacy simple outputs (kept for current UI) ----------------
         outputs = []
         for m in odds:
             mid = normalize_match(m)
@@ -387,18 +645,21 @@ def create_app():
                     "completed": (score_obj or {}).get("completed"),
                     "score": (score_obj or {}).get("scores"),
                     "score_last_update": (score_obj or {}).get("last_update"),
-                    "note": "Scores come from The Odds API /scores endpoint when available. Style/progression/fatigue gets wired once Tennis Abstract DB is imported.",
                 })
 
         return jsonify({
             "sport_key": sport_key,
             "markets": markets,
+            "regions": regions,
             "count": len(odds),
             "requests_remaining": headers.get("x-requests-remaining"),
             "requests_used": headers.get("x-requests-used"),
             "raw": odds,
             "outputs": outputs,
             "ts": ts,
+            "snapshot_id": snapshot_id,
+            "candidates_debug": [cand_to_dict(c) for c in candidates],
+            "candidates_actionable": [cand_to_dict(c) for c in actionable],
         })
 
     return app
