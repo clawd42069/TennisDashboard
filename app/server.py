@@ -297,6 +297,30 @@ def create_app():
         except Exception:
             return None
 
+    @app.get("/admin/actionables/debug")
+    def admin_actionables_debug():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        conn = connect()
+        by_res = conn.execute(
+            "SELECT result, COUNT(*) AS n FROM daily_actionables GROUP BY result ORDER BY result"
+        ).fetchall()
+        by_sk = conn.execute(
+            "SELECT sport_key, result, COUNT(*) AS n FROM daily_actionables GROUP BY sport_key, result ORDER BY sport_key, result"
+        ).fetchall()
+        sample = conn.execute(
+            "SELECT id, date_et, sport_key, result, match_id, side FROM daily_actionables ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+        conn.close()
+        return jsonify(
+            {
+                "ok": True,
+                "by_result": [dict(r) for r in by_res],
+                "by_sport_key": [dict(r) for r in by_sk],
+                "sample": [dict(r) for r in sample],
+            }
+        )
+
     @app.post("/admin/actionables/settle")
     def admin_actionables_settle():
         if not _auth_ok():
