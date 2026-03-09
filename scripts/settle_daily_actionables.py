@@ -69,7 +69,25 @@ def main():
 
     total_updated = 0
     for sport_key in sport_keys:
-        events, _headers = get_scores(sport_key=sport_key, days_from=args.days_from)
+        score_key_candidates = [sport_key]
+        if sport_key.startswith("tennis_atp_"):
+            score_key_candidates.append("tennis_atp")
+        elif sport_key.startswith("tennis_wta_"):
+            score_key_candidates.append("tennis_wta")
+
+        events = None
+        last_error = None
+        for candidate_key in score_key_candidates:
+            try:
+                events, _headers = get_scores(sport_key=candidate_key, days_from=args.days_from)
+                break
+            except Exception as e:
+                last_error = str(e)
+
+        if events is None:
+            print(f"Skipping {sport_key}: {last_error}")
+            continue
+
         by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
 
         rows = conn.execute(

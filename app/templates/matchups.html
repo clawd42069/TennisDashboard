@@ -4,7 +4,7 @@
   <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
     <div>
       <h2 style="margin:0 0 8px 0;">Matchup Report</h2>
-      <div class="muted">Live odds + ranked candidates + snapshot history. This pass focuses on making the model output easier to review without re-pulling odds every time.</div>
+      <div class="muted">Live odds + ranked candidates. Snapshot browsing is hidden for now, but the backend support is still preserved so we can bring it back later.</div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <span id="modePill" class="pill">Saved snapshot mode</span>
@@ -13,34 +13,22 @@
   </div>
 </div>
 
-<div class="card grid2">
-  <div>
-    <h3 style="margin-top:0;">1) Live feed controls</h3>
-    <div class="muted">Pull active tennis feeds from The Odds API, then refresh live when you want current-state rankings.</div>
-    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
-      <button onclick="loadSports()">Load tennis feeds</button>
-      <select id="sportKey"></select>
-      <select id="markets">
-        <option value="h2h">h2h (moneyline)</option>
-        <option value="h2h,spreads,totals">h2h + spreads + totals</option>
-      </select>
-      <button onclick="fetchOdds()">Fetch live odds</button>
-      <button onclick="stopAutoRefresh()">Stop refresh</button>
-    </div>
-    <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
+<div class="card">
+  <h3 style="margin-top:0;">Live feed controls</h3>
+  <div class="muted">Pull active tennis feeds from The Odds API. If live fetch is unavailable, the page falls back to the latest saved snapshot.</div>
+  <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
+    <button onclick="loadSports()">Load tennis feeds</button>
+    <select id="sportKey"></select>
+    <select id="markets">
+      <option value="h2h">h2h (moneyline)</option>
+      <option value="h2h,spreads,totals">h2h + spreads + totals</option>
+    </select>
+    <button onclick="fetchOdds()">Fetch live odds</button>
+    <button onclick="stopAutoRefresh()">Stop refresh</button>
+    <button onclick="loadLatestSnapshot(true)">Reload latest saved</button>
   </div>
-
-  <div>
-    <h3 style="margin-top:0;">2) Snapshot browser</h3>
-    <div class="muted">Browse the latest saved model snapshots without burning another odds request.</div>
-    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <button onclick="loadRecentSnapshots()">Refresh snapshot list</button>
-      <select id="snapshotSelect"></select>
-      <button onclick="loadSelectedSnapshot()">Open snapshot</button>
-      <button onclick="loadLatestSnapshot()">Open latest saved</button>
-    </div>
-    <div id="snapshotMeta" class="muted" style="margin-top:10px;"></div>
-  </div>
+  <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
+  <div id="snapshotMeta" class="muted" style="margin-top:8px;"></div>
 </div>
 
 <div class="grid2" style="align-items:start;">
@@ -51,7 +39,10 @@
 
   <div class="card">
     <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-      <h3 style="margin:0;">Daily actionables audit</h3>
+      <div>
+        <h3 style="margin:0;">Daily actionables</h3>
+        <div class="muted">Auto-refreshes to reflect OPEN vs CLOSED/graded status.</div>
+      </div>
       <button onclick="loadActionables()">Refresh</button>
     </div>
     <div id="actionablesMeta" class="muted" style="margin-top:8px;"></div>
@@ -63,7 +54,7 @@
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
     <div>
       <h3 style="margin:0;">Actionable shortlist</h3>
-      <div class="muted">Filtered candidates from the currently selected snapshot.</div>
+      <div class="muted">Filtered candidates from the currently loaded snapshot.</div>
     </div>
     <div class="muted">Sorted by EV_adj</div>
   </div>
@@ -74,7 +65,7 @@
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
     <div>
       <h3 style="margin:0;">Debug / review queue</h3>
-      <div class="muted">Use this to inspect the broader shortlist behind the actionable cut.</div>
+      <div class="muted">Inspect the broader shortlist behind the actionable cut.</div>
     </div>
     <div class="pager">
       <button onclick="prevPage()">Prev</button>
@@ -99,6 +90,7 @@
 
 <script>
 let refreshTimer = null;
+let actionablesTimer = null;
 let lastOutputs = [];
 let lastActionable = [];
 let page = 1;
@@ -281,28 +273,9 @@ async function loadSports(){
   el.textContent = `Found ${(j.tennis||[]).length} tennis feeds. Requests remaining: ${j.requests_remaining ?? 'n/a'}`;
 }
 
-async function loadRecentSnapshots(){
+async function loadSnapshot(snapshotId, quiet=false){
   const meta = document.getElementById('snapshotMeta');
-  meta.textContent = 'Loading snapshots…';
-  const r = await fetch('/api/snapshots/recent?limit=20');
-  const j = await r.json();
-
-  const sel = document.getElementById('snapshotSelect');
-  sel.innerHTML = '';
-  (j.snapshots || []).forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = `#${s.id} • ${fmtLocal(s.ts)} • ${s.sport_key} • actionables ${s.actionable_count || 0}/${s.candidate_count || 0}`;
-    sel.appendChild(opt);
-  });
-
-  const first = (j.snapshots || [])[0];
-  meta.textContent = first ? `Loaded ${j.count} saved snapshots. Latest is #${first.id}.` : 'No saved snapshots yet.';
-}
-
-async function loadSnapshot(snapshotId){
-  const meta = document.getElementById('snapshotMeta');
-  meta.textContent = 'Loading snapshot…';
+  if (!quiet) meta.textContent = 'Loading latest saved snapshot…';
   const [allResp, actionableResp] = await Promise.all([
     fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=all&limit=200`),
     fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=actionable&limit=100`)
@@ -321,29 +294,22 @@ async function loadSnapshot(snapshotId){
   renderPage();
 
   if (currentSnapshot){
-    meta.textContent = `Viewing snapshot #${currentSnapshot.id} • ${fmtLocal(currentSnapshot.ts)} • ${currentSnapshot.sport_key} • markets ${currentSnapshot.markets}`;
+    meta.textContent = `Showing saved snapshot #${currentSnapshot.id} • ${fmtLocal(currentSnapshot.ts)} • ${currentSnapshot.sport_key} • markets ${currentSnapshot.markets}`;
   } else {
-    meta.textContent = all.note || 'No snapshot found.';
+    meta.textContent = all.note || 'No saved snapshot found.';
   }
 }
 
-async function loadSelectedSnapshot(){
-  const snapshotId = document.getElementById('snapshotSelect').value;
-  if (!snapshotId) return;
+async function loadLatestSnapshot(forceMessage=false){
   stopAutoRefresh(false);
-  await loadSnapshot(snapshotId);
-}
-
-async function loadLatestSnapshot(){
-  stopAutoRefresh(false);
+  const meta = document.getElementById('snapshotMeta');
+  if (forceMessage) meta.textContent = 'Loading latest saved snapshot…';
   const r = await fetch('/api/candidates/latest?view=all&limit=200');
   const j = await r.json();
   if (j.snapshot && j.snapshot.id){
-    await loadSnapshot(j.snapshot.id);
-    const sel = document.getElementById('snapshotSelect');
-    if ([...sel.options].some(o => String(o.value) === String(j.snapshot.id))){
-      sel.value = String(j.snapshot.id);
-    }
+    await loadSnapshot(j.snapshot.id, !forceMessage);
+  } else if (forceMessage) {
+    meta.textContent = j.note || 'No saved snapshot found.';
   }
 }
 
@@ -360,7 +326,8 @@ async function fetchOdds(){
   const r = await fetch(`/api/odds?sport_key=${encodeURIComponent(sportKey)}&markets=${encodeURIComponent(markets)}`);
   const j = await r.json();
   if (j.error){
-    meta.innerHTML = `<span class="err">${j.error}: ${j.message || ''}</span>`;
+    meta.innerHTML = `<span class="err">${j.message || j.error}</span><br><span class="muted">${j.hint || ''}</span>`;
+    await loadLatestSnapshot();
     return;
   }
 
@@ -382,7 +349,6 @@ async function fetchOdds(){
   renderPage();
 
   meta.textContent = `Fetched live snapshot #${j.snapshot_id} • ${j.count} matches • remaining requests ${j.requests_remaining ?? 'n/a'} • updated ${fmtLocal(j.ts)}`;
-  await loadRecentSnapshots();
 
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(fetchOdds, 60000);
@@ -395,7 +361,7 @@ function stopAutoRefresh(showMessage=true){
     refreshTimer = null;
     renderMode();
     if (showMessage){
-      document.getElementById('snapshotMeta').textContent = 'Auto-refresh stopped. You are free to browse saved snapshots.';
+      document.getElementById('snapshotMeta').textContent = 'Auto-refresh stopped.';
     }
   }
 }
@@ -414,18 +380,23 @@ async function loadActionables(){
   }
 
   body.innerHTML = rows.slice(0,6).map(row => {
-    const resClass = row.result === 'WIN' ? 'win' : (row.result === 'LOSS' ? 'loss' : 'warn');
+    const status = row.status_display || row.result || 'OPEN';
+    const resClass = status === 'WIN' ? 'win' : (status === 'LOSS' ? 'loss' : (status === 'CLOSED' ? 'warn' : 'neutral'));
     return `
       <div class="card" style="margin:10px 0 0 0;">
         <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-          <div><strong>${row.side}</strong> <span class="muted">in</span> ${row.player_a} vs ${row.player_b}</div>
-          <div class="${resClass}">${row.result || 'OPEN'}</div>
+          <div>
+            <strong>${row.side}</strong> <span class="muted">in</span> ${row.player_a} vs ${row.player_b}
+            <div class="muted" style="margin-top:4px;">${fmtLocal(row.commence_time)} • ${row.book || '—'}</div>
+          </div>
+          <div class="${resClass}">${status}</div>
         </div>
         <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
           ${pill(`Price <strong>${row.price_decimal ?? '—'}</strong> ${row.price_american ? `(${row.price_american > 0 ? '+' : ''}${row.price_american})` : ''}`)}
           ${pill(`EV_adj <strong>${signed(row.ev_adj)}</strong>`)}
           ${pill(`Conf <strong>${pct(row.confidence,0)}</strong>`)}
         </div>
+        ${row.status_note ? `<div class="muted" style="margin-top:8px;">${row.status_note}</div>` : ''}
       </div>
     `;
   }).join('');
@@ -491,8 +462,10 @@ function clearClv(){
 renderMode();
 renderSummary();
 loadSports();
-loadRecentSnapshots().then(loadLatestSnapshot);
+loadLatestSnapshot();
 loadActionables();
+if (actionablesTimer) clearInterval(actionablesTimer);
+actionablesTimer = setInterval(loadActionables, 60000);
 </script>
 
 {% endblock %}

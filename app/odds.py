@@ -14,11 +14,42 @@ def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _json_or_text(resp: requests.Response):
+    try:
+        return resp.json()
+    except Exception:
+        return resp.text
+
+
+def _ensure_ok(resp: requests.Response):
+    if resp.ok:
+        return
+
+    payload = _json_or_text(resp)
+    headers = dict(resp.headers)
+    if isinstance(payload, dict):
+        msg = payload.get("message") or payload.get("error") or str(payload)
+        code = payload.get("error_code")
+        used = headers.get("X-Requests-Used")
+        remaining = headers.get("X-Requests-Remaining")
+        extra = []
+        if code:
+            extra.append(f"code={code}")
+        if used is not None:
+            extra.append(f"used={used}")
+        if remaining is not None:
+            extra.append(f"remaining={remaining}")
+        suffix = f" ({', '.join(extra)})" if extra else ""
+        raise RuntimeError(f"Odds API {resp.status_code}: {msg}{suffix}")
+
+    raise RuntimeError(f"Odds API {resp.status_code}: {payload}")
+
+
 def list_sports():
     if not API_KEY:
         raise RuntimeError("ODDS_API_KEY not set")
     r = requests.get(f"{BASE_URL}/sports", params={"api_key": API_KEY}, timeout=30)
-    r.raise_for_status()
+    _ensure_ok(r)
     return r.json(), dict(r.headers)
 
 
@@ -35,7 +66,7 @@ def get_odds(sport_key: str, regions="us,uk,eu", markets="h2h", odds_format="dec
         },
         timeout=30,
     )
-    r.raise_for_status()
+    _ensure_ok(r)
     return r.json(), dict(r.headers)
 
 
@@ -54,7 +85,7 @@ def get_scores(sport_key: str, days_from: int = 3):
         },
         timeout=30,
     )
-    r.raise_for_status()
+    _ensure_ok(r)
     return r.json(), dict(r.headers)
 
 

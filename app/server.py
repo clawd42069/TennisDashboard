@@ -351,16 +351,27 @@ def create_app():
         checked = 0
         errors = []
         for sport_key in sport_keys:
-            scores_sport_key = sport_key
+            score_key_candidates = [sport_key]
             if sport_key.startswith("tennis_atp_"):
-                scores_sport_key = "tennis_atp"
+                score_key_candidates.append("tennis_atp")
             elif sport_key.startswith("tennis_wta_"):
-                scores_sport_key = "tennis_wta"
-            try:
-                events, _headers = get_scores(sport_key=scores_sport_key, days_from=days_from)
-            except Exception as e:
-                errors.append({"sport_key": sport_key, "scores_sport_key": scores_sport_key, "error": str(e)})
+                score_key_candidates.append("tennis_wta")
+
+            events = None
+            last_error = None
+            used_score_key = None
+            for candidate_key in score_key_candidates:
+                try:
+                    events, _headers = get_scores(sport_key=candidate_key, days_from=days_from)
+                    used_score_key = candidate_key
+                    break
+                except Exception as e:
+                    last_error = str(e)
+
+            if events is None:
+                errors.append({"sport_key": sport_key, "score_key_candidates": score_key_candidates, "error": last_error})
                 continue
+
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
 
             rows = conn.execute(
@@ -587,7 +598,28 @@ def create_app():
             (date_et,),
         ).fetchall()
         conn.close()
-        return jsonify({"date_et": date_et, "count": len(rows), "rows": [dict(r) for r in rows]})
+
+        now_utc = datetime.now(timezone.utc)
+        out = []
+        for r in rows:
+            d = dict(r)
+            status_display = d.get("result") or "OPEN"
+            status_note = None
+            if status_display == "OPEN":
+                commence_time = d.get("commence_time")
+                if commence_time:
+                    try:
+                        dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                        if dt <= now_utc:
+                            status_display = "CLOSED"
+                            status_note = "Start time has passed; awaiting score-based grading."
+                    except Exception:
+                        pass
+            d["status_display"] = status_display
+            d["status_note"] = status_note
+            out.append(d)
+
+        return jsonify({"date_et": date_et, "count": len(out), "rows": out})
 
     @app.get("/api/style/player")
     def api_style_player():
@@ -663,11 +695,15 @@ def create_app():
             odds, headers = get_odds(sport_key=sport_key, markets=markets, regions=regions)
             scores, _score_headers = get_scores(sport_key=sport_key, days_from=3)
         except Exception as e:
+            msg = str(e)
+            hint = "Call /api/tennis_sports to see valid keys (ATP-only use the tennis_atp_* keys)."
+            if "OUT_OF_USAGE_CREDITS" in msg or "Usage quota has been reached" in msg:
+                hint = "The Odds API key is out of usage credits. Top up / swap the key in Render, or use the latest saved snapshot until credits reset."
             return jsonify({
                 "error": "odds_api_error",
-                "message": str(e),
+                "message": msg,
                 "sport_key": sport_key,
-                "hint": "Call /api/tennis_sports to see valid keys (ATP-only use the tennis_atp_* keys).",
+                "hint": hint,
             }), 400
         scores_by_id = {s.get("id"): s for s in (scores or []) if s.get("id")}
         surface = infer_surface(sport_key)

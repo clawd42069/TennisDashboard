@@ -1,0 +1,24 @@
+{#
+Saved snapshot-browser UI block from Matchup Report.
+
+Reason removed:
+- Ryan wanted the snapshot browser hidden for now.
+
+Kept in codebase for easy restore:
+- Backend endpoints remain active:
+  - /api/snapshots/recent
+  - /api/candidates/latest?snapshot_id=...
+- Frontend can re-add browser controls later without rebuilding the backend.
+#}
+
+<div>
+  <h3 style="margin-top:0;">2) Snapshot browser</h3>
+  <div class="muted">Browse the latest saved model snapshots without burning another odds request.</div>
+  <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+    <button onclick="loadRecentSnapshots()">Refresh snapshot list</button>
+    <select id="snapshotSelect"></select>
+    <button onclick="loadSelectedSnapshot()">Open snapshot</button>
+    <button onclick="loadLatestSnapshot()">Open latest saved</button>
+  </div>
+  <div id="snapshotMeta" class="muted" style="margin-top:10px;"></div>
+</div>
