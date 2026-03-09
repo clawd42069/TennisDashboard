@@ -297,6 +297,18 @@ def create_app():
         except Exception:
             return None
 
+    @app.get("/admin/odds/sports")
+    def admin_odds_sports():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        try:
+            sports, _h = list_sports()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        # return tennis-related keys first to keep payload small
+        tennis = [s for s in (sports or []) if str(s.get("key", "")).startswith("tennis")]
+        return jsonify({"ok": True, "tennis": tennis, "count_tennis": len(tennis), "count_all": len(sports or [])})
+
     @app.get("/admin/actionables/debug")
     def admin_actionables_debug():
         if not _auth_ok():
