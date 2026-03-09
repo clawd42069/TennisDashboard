@@ -1,44 +1,81 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="card">
-  <h2 style="margin:0 0 8px 0;">Matchup Report</h2>
-  <div class="muted">Live odds + raw data + outputs. Style/progression/fatigue gets wired once Tennis Abstract DB import is done.</div>
+  <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+    <div>
+      <h2 style="margin:0 0 8px 0;">Matchup Report</h2>
+      <div class="muted">Live odds + ranked candidates + snapshot history. This pass focuses on making the model output easier to review without re-pulling odds every time.</div>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <span id="modePill" class="pill">Saved snapshot mode</span>
+      <span id="autoRefreshPill" class="pill" style="display:none;">Auto-refresh on</span>
+    </div>
+  </div>
 </div>
 
 <div class="card grid2">
   <div>
-    <h3 style="margin-top:0;">1) Choose tournament feed</h3>
-    <div class="muted">We pull active tennis feeds from The Odds API (e.g., Indian Wells). Then auto-refresh every 60s.</div>
-    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap;">
+    <h3 style="margin-top:0;">1) Live feed controls</h3>
+    <div class="muted">Pull active tennis feeds from The Odds API, then refresh live when you want current-state rankings.</div>
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
       <button onclick="loadSports()">Load tennis feeds</button>
       <select id="sportKey"></select>
       <select id="markets">
         <option value="h2h">h2h (moneyline)</option>
         <option value="h2h,spreads,totals">h2h + spreads + totals</option>
       </select>
-      <button onclick="fetchOdds()">Fetch odds now</button>
+      <button onclick="fetchOdds()">Fetch live odds</button>
+      <button onclick="stopAutoRefresh()">Stop refresh</button>
     </div>
     <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
   </div>
 
   <div>
-    <h3 style="margin-top:0;">2) Ranked Candidates (v0)</h3>
-    <div class="muted">This is the new pipeline: Top-N candidates ranked by EV_adj (EV × confidence). Elo/overlays come next.</div>
-    <div id="outputsMeta" class="muted" style="margin-top:10px;"></div>
+    <h3 style="margin-top:0;">2) Snapshot browser</h3>
+    <div class="muted">Browse the latest saved model snapshots without burning another odds request.</div>
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <button onclick="loadRecentSnapshots()">Refresh snapshot list</button>
+      <select id="snapshotSelect"></select>
+      <button onclick="loadSelectedSnapshot()">Open snapshot</button>
+      <button onclick="loadLatestSnapshot()">Open latest saved</button>
+    </div>
+    <div id="snapshotMeta" class="muted" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<div class="grid2" style="align-items:start;">
+  <div class="card">
+    <h3 style="margin-top:0;">Current view summary</h3>
+    <div id="summaryCards" class="grid2" style="grid-template-columns: repeat(2, 1fr);"></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+      <h3 style="margin:0;">Daily actionables audit</h3>
+      <button onclick="loadActionables()">Refresh</button>
+    </div>
+    <div id="actionablesMeta" class="muted" style="margin-top:8px;"></div>
+    <div id="actionablesAudit" style="margin-top:10px;"></div>
   </div>
 </div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-    <h3 style="margin:0;">Actionable (filtered)</h3>
-    <div class="muted">Temporary filter: EV_adj &gt; 0 and confidence ≥ 0.55</div>
+    <div>
+      <h3 style="margin:0;">Actionable shortlist</h3>
+      <div class="muted">Filtered candidates from the currently selected snapshot.</div>
+    </div>
+    <div class="muted">Sorted by EV_adj</div>
   </div>
   <div id="actionable"></div>
 </div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-    <h3 style="margin:0;">Debug (Top N)</h3>
+    <div>
+      <h3 style="margin:0;">Debug / review queue</h3>
+      <div class="muted">Use this to inspect the broader shortlist behind the actionable cut.</div>
+    </div>
     <div class="pager">
       <button onclick="prevPage()">Prev</button>
       <div class="muted">Page <span id="pageNum">1</span></div>
@@ -49,7 +86,16 @@
   <div id="outputs"></div>
 </div>
 
-<!-- Raw JSON section removed -->
+<div class="card" id="clvCard" style="display:none;">
+  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+    <div>
+      <h3 style="margin:0;">CLV history</h3>
+      <div id="clvTitle" class="muted"></div>
+    </div>
+    <button onclick="clearClv()">Close</button>
+  </div>
+  <div id="clvBody" style="margin-top:10px;"></div>
+</div>
 
 <script>
 let refreshTimer = null;
@@ -57,6 +103,165 @@ let lastOutputs = [];
 let lastActionable = [];
 let page = 1;
 const pageSize = 8;
+let currentSnapshot = null;
+let liveMode = false;
+
+function pct(x, digits=1){
+  if (x === null || x === undefined || Number.isNaN(x)) return '—';
+  return (x*100).toFixed(digits) + '%';
+}
+
+function num(x, digits=3){
+  if (x === null || x === undefined || Number.isNaN(x)) return '—';
+  return Number(x).toFixed(digits);
+}
+
+function signed(x, digits=3){
+  if (x === null || x === undefined || Number.isNaN(x)) return '—';
+  const v = Number(x);
+  return `${v >= 0 ? '+' : ''}${v.toFixed(digits)}`;
+}
+
+function fmtLocal(iso){
+  if (!iso) return '—';
+  const d = new Date(iso);
+  let h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2,'0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12; if (h === 0) h = 12;
+  const time = `${h}:${m}${ampm}`;
+  const mm = (d.getMonth()+1).toString().padStart(2,'0');
+  const dd = d.getDate().toString().padStart(2,'0');
+  const yy = (d.getFullYear()%100).toString().padStart(2,'0');
+  return `${time} ${mm}/${dd}/${yy}`;
+}
+
+function pill(text){
+  return `<span class="pill">${text}</span>`;
+}
+
+function modeText(){
+  return liveMode ? 'Live mode' : 'Saved snapshot mode';
+}
+
+function renderMode(){
+  document.getElementById('modePill').textContent = modeText();
+  document.getElementById('autoRefreshPill').style.display = refreshTimer ? 'inline-block' : 'none';
+}
+
+function renderSummary(){
+  const wrap = document.getElementById('summaryCards');
+  const snap = currentSnapshot || {};
+  const actionableCount = lastActionable.length;
+  const best = lastOutputs[0] || null;
+  wrap.innerHTML = `
+    <div class="card" style="margin:0;">
+      <div class="muted">Snapshot</div>
+      <div style="font-size:22px; font-weight:800;">${snap.id ?? '—'}</div>
+      <div class="muted">${fmtLocal(snap.ts)}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Feed</div>
+      <div style="font-size:18px; font-weight:800;">${snap.sport_key || '—'}</div>
+      <div class="muted">markets: ${snap.markets || '—'}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Actionable / debug</div>
+      <div style="font-size:22px; font-weight:800;">${actionableCount} / ${lastOutputs.length}</div>
+      <div class="muted">Top N target: ${snap.top_n ?? '—'}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Best candidate</div>
+      <div style="font-size:18px; font-weight:800;">${best ? best.side : '—'}</div>
+      <div class="muted">EV_adj ${best ? signed(best.ev_adj) : '—'} • Conf ${best ? pct(best.confidence,0) : '—'}</div>
+    </div>
+  `;
+}
+
+function candidateCard(c, compact=false){
+  const reasons = (c.reasons || []).map(r => `<li>${r}</li>`).join('');
+  const drill = [
+    ['Candidate ID', c.id ?? '—'],
+    ['Price', `${c.price_decimal ?? '—'} ${c.price_american ? `(${c.price_american > 0 ? '+' : ''}${c.price_american})` : ''}`],
+    ['Model', `p0 ${num(c.p0)} → p ${num(c.p_final)} | q ${num(c.q_implied)}`],
+    ['Edge', `EV ${signed(c.ev)} | EV_adj ${signed(c.ev_adj)}`],
+    ['Confidence', pct(c.confidence, 0)],
+    ['Units', c.units_suggested ?? '—'],
+    ['Line', c.line ?? '—'],
+    ['Surface', c.surface || '—'],
+    ['Book', c.book || '—'],
+    ['Start', fmtLocal(c.commence_time)]
+  ].map(([k,v]) => `<div><span class="muted">${k}:</span> <strong>${v}</strong></div>`).join('');
+
+  return `
+    <div class="card ${compact ? '' : 'live'}" style="margin-top:12px;">
+      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+        <div>
+          <div style="font-size:18px; font-weight:800;">${c.side}</div>
+          <div class="muted">${c.player_a} vs ${c.player_b} • ${c.market_type}${c.line !== null && c.line !== undefined ? ` • line ${c.line}` : ''}</div>
+        </div>
+        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
+      </div>
+
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${pill(`Price <strong>${c.price_decimal ?? '—'}</strong> ${c.price_american ? `(${c.price_american > 0 ? '+' : ''}${c.price_american})` : ''}`)}
+        ${pill(`p0 <strong>${num(c.p0)}</strong>`)}
+        ${pill(`p <strong>${num(c.p_final)}</strong>`)}
+        ${pill(`q <strong>${num(c.q_implied)}</strong>`)}
+        ${pill(`EV <strong>${signed(c.ev)}</strong>`)}
+        ${pill(`Conf <strong>${pct(c.confidence, 0)}</strong>`)}
+        ${pill(`EV_adj <strong>${signed(c.ev_adj)}</strong>`)}
+        ${c.units_suggested ? pill(`Units <strong>${c.units_suggested}</strong>`) : ''}
+      </div>
+
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;">Why the model likes it</summary>
+        <ul class="muted" style="margin:10px 0 0 18px;">${reasons || '<li>No reasons stored.</li>'}</ul>
+      </details>
+
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer;">Candidate details</summary>
+        <div class="grid2 muted" style="margin-top:10px; gap:8px 18px;">${drill}</div>
+      </details>
+
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        ${c.id ? `<button onclick="loadClv(${c.id})">Show CLV</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderActionable(){
+  const div = document.getElementById('actionable');
+  if (!lastActionable.length){
+    div.innerHTML = `<div class="muted" style="margin-top:10px;">No actionable candidates in this snapshot.</div>`;
+    return;
+  }
+  div.innerHTML = lastActionable.map(c => candidateCard(c, false)).join('');
+}
+
+function renderPage(){
+  const outDiv = document.getElementById('outputs');
+  const total = lastOutputs.length;
+  document.getElementById('totalCount').textContent = total;
+  const maxPage = Math.max(1, Math.ceil(total / pageSize));
+  page = Math.min(Math.max(1, page), maxPage);
+  document.getElementById('pageNum').textContent = page;
+
+  const start = (page - 1) * pageSize;
+  const slice = lastOutputs.slice(start, start + pageSize);
+  document.getElementById('showingCount').textContent = slice.length;
+
+  if (!slice.length){
+    outDiv.innerHTML = `<div class="muted" style="margin-top:10px;">No candidates loaded yet.</div>`;
+    return;
+  }
+
+  outDiv.innerHTML = slice.map(c => candidateCard(c, true)).join('');
+}
+
+function nextPage(){ page += 1; renderPage(); }
+function prevPage(){ page -= 1; renderPage(); }
 
 async function loadSports(){
   const el = document.getElementById('sportsMeta');
@@ -76,139 +281,218 @@ async function loadSports(){
   el.textContent = `Found ${(j.tennis||[]).length} tennis feeds. Requests remaining: ${j.requests_remaining ?? 'n/a'}`;
 }
 
-function pct(x){
-  if (x === null || x === undefined) return '';
-  return (x*100).toFixed(1) + '%';
+async function loadRecentSnapshots(){
+  const meta = document.getElementById('snapshotMeta');
+  meta.textContent = 'Loading snapshots…';
+  const r = await fetch('/api/snapshots/recent?limit=20');
+  const j = await r.json();
+
+  const sel = document.getElementById('snapshotSelect');
+  sel.innerHTML = '';
+  (j.snapshots || []).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `#${s.id} • ${fmtLocal(s.ts)} • ${s.sport_key} • actionables ${s.actionable_count || 0}/${s.candidate_count || 0}`;
+    sel.appendChild(opt);
+  });
+
+  const first = (j.snapshots || [])[0];
+  meta.textContent = first ? `Loaded ${j.count} saved snapshots. Latest is #${first.id}.` : 'No saved snapshots yet.';
 }
 
-function fmtLocal(iso){
-  if (!iso) return '';
-  const d = new Date(iso);
-  // time
-  let h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2,'0');
-  const ampm = h >= 12 ? 'pm' : 'am';
-  h = h % 12; if (h === 0) h = 12;
-  const time = `${h}:${m}${ampm}`;
-  // date mm/dd/yy
-  const mm = (d.getMonth()+1).toString().padStart(2,'0');
-  const dd = d.getDate().toString().padStart(2,'0');
-  const yy = (d.getFullYear()%100).toString().padStart(2,'0');
-  return `${time} ${mm}/${dd}/${yy}`;
-}
+async function loadSnapshot(snapshotId){
+  const meta = document.getElementById('snapshotMeta');
+  meta.textContent = 'Loading snapshot…';
+  const [allResp, actionableResp] = await Promise.all([
+    fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=all&limit=200`),
+    fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=actionable&limit=100`)
+  ]);
+  const all = await allResp.json();
+  const actionable = await actionableResp.json();
 
-function pill(text){
-  return `<span class="pill">${text}</span>`;
-}
+  currentSnapshot = all.snapshot || null;
+  lastOutputs = all.candidates || [];
+  lastActionable = actionable.candidates || [];
+  page = 1;
+  liveMode = false;
+  renderMode();
+  renderSummary();
+  renderActionable();
+  renderPage();
 
-function renderActionable(){
-  const div = document.getElementById('actionable');
-  div.innerHTML = '';
-  if (!lastActionable.length){
-    div.innerHTML = `<div class="muted">No actionable candidates right now (v0 filter).</div>`;
-    return;
+  if (currentSnapshot){
+    meta.textContent = `Viewing snapshot #${currentSnapshot.id} • ${fmtLocal(currentSnapshot.ts)} • ${currentSnapshot.sport_key} • markets ${currentSnapshot.markets}`;
+  } else {
+    meta.textContent = all.note || 'No snapshot found.';
   }
-
-  lastActionable.forEach(c => {
-    const box = document.createElement('div');
-    box.className = 'card';
-    box.innerHTML = `
-      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-        <div><strong>${c.side}</strong> (${c.market_type}) <span class="muted">in</span> ${c.player_a} vs ${c.player_b}</div>
-        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
-      </div>
-      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        ${pill(`Price <strong>${c.price_decimal ?? ''}</strong> (${c.price_american ?? ''})`)}
-        ${pill(`p <strong>${(c.p_final ?? 0).toFixed(3)}</strong> (q ${(c.q_implied ?? 0).toFixed(3)})`)}
-        ${pill(`EV <strong>${(c.ev ?? 0).toFixed(3)}</strong>`)}
-        ${pill(`Conf <strong>${Math.round((c.confidence ?? 0)*100)}</strong>/100`)}
-        ${pill(`EV_adj <strong>${(c.ev_adj ?? 0).toFixed(3)}</strong>`)}
-      </div>
-      <div class="muted" style="margin-top:8px;">
-        ${(c.reasons||[]).slice(0,3).map(r => `• ${r}`).join('<br/>')}
-      </div>
-    `;
-    div.appendChild(box);
-  });
 }
 
-function renderPage(){
-  const outDiv = document.getElementById('outputs');
-  outDiv.innerHTML = '';
-
-  const total = lastOutputs.length;
-  document.getElementById('totalCount').textContent = total;
-  const maxPage = Math.max(1, Math.ceil(total / pageSize));
-  page = Math.min(Math.max(1, page), maxPage);
-  document.getElementById('pageNum').textContent = page;
-
-  const start = (page - 1) * pageSize;
-  const slice = lastOutputs.slice(start, start + pageSize);
-  document.getElementById('showingCount').textContent = slice.length;
-
-  slice.forEach(c => {
-    const box = document.createElement('div');
-    box.className = 'card';
-
-    box.innerHTML = `
-      <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-        <div><strong>${c.side}</strong> (${c.market_type}) <span class="muted">in</span> ${c.player_a} vs ${c.player_b}</div>
-        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
-      </div>
-      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        ${pill(`Price <strong>${c.price_decimal ?? ''}</strong> (${c.price_american ?? ''})`)}
-        ${pill(`p0 <strong>${(c.p0 ?? 0).toFixed(3)}</strong> • p <strong>${(c.p_final ?? 0).toFixed(3)}</strong>`)}
-        ${pill(`q <strong>${(c.q_implied ?? 0).toFixed(3)}</strong>`)}
-        ${pill(`EV <strong>${(c.ev ?? 0).toFixed(3)}</strong>`)}
-        ${pill(`Conf <strong>${Math.round((c.confidence ?? 0)*100)}</strong>/100`)}
-        ${pill(`EV_adj <strong>${(c.ev_adj ?? 0).toFixed(3)}</strong>`)}
-      </div>
-      <div class="muted" style="margin-top:8px;">
-        ${(c.reasons||[]).slice(0,3).map(r => `• ${r}`).join('<br/>')}
-      </div>
-    `;
-    outDiv.appendChild(box);
-  });
+async function loadSelectedSnapshot(){
+  const snapshotId = document.getElementById('snapshotSelect').value;
+  if (!snapshotId) return;
+  stopAutoRefresh(false);
+  await loadSnapshot(snapshotId);
 }
 
-function nextPage(){ page += 1; renderPage(); }
-function prevPage(){ page -= 1; renderPage(); }
+async function loadLatestSnapshot(){
+  stopAutoRefresh(false);
+  const r = await fetch('/api/candidates/latest?view=all&limit=200');
+  const j = await r.json();
+  if (j.snapshot && j.snapshot.id){
+    await loadSnapshot(j.snapshot.id);
+    const sel = document.getElementById('snapshotSelect');
+    if ([...sel.options].some(o => String(o.value) === String(j.snapshot.id))){
+      sel.value = String(j.snapshot.id);
+    }
+  }
+}
 
 async function fetchOdds(){
   const sportKey = document.getElementById('sportKey').value;
   const markets = document.getElementById('markets').value;
+  const meta = document.getElementById('snapshotMeta');
   if (!sportKey){
-    document.getElementById('outputsMeta').innerHTML = '<span class="err">Pick a sport feed first.</span>';
+    meta.innerHTML = '<span class="err">Pick a sport feed first.</span>';
     return;
   }
 
-  const meta = document.getElementById('outputsMeta');
-  meta.textContent = 'Fetching…';
-
+  meta.textContent = 'Fetching live odds…';
   const r = await fetch(`/api/odds?sport_key=${encodeURIComponent(sportKey)}&markets=${encodeURIComponent(markets)}`);
   const j = await r.json();
   if (j.error){
-    meta.innerHTML = `<span class="err">${j.error}</span>`;
+    meta.innerHTML = `<span class="err">${j.error}: ${j.message || ''}</span>`;
     return;
   }
 
-  meta.textContent = `Fetched ${j.count} matches • remaining: ${j.requests_remaining ?? 'n/a'} • updated: ${j.ts} • snapshot: ${j.snapshot_id ?? 'n/a'}`;
-
+  currentSnapshot = {
+    id: j.snapshot_id,
+    ts: j.ts,
+    sport_key: j.sport_key,
+    markets: j.markets,
+    regions: j.regions,
+    top_n: (j.candidates_debug || []).length,
+  };
   lastActionable = j.candidates_actionable || [];
   lastOutputs = j.candidates_debug || [];
   page = 1;
+  liveMode = true;
+  renderMode();
+  renderSummary();
   renderActionable();
   renderPage();
 
-  // raw section removed
+  meta.textContent = `Fetched live snapshot #${j.snapshot_id} • ${j.count} matches • remaining requests ${j.requests_remaining ?? 'n/a'} • updated ${fmtLocal(j.ts)}`;
+  await loadRecentSnapshots();
 
-  // auto refresh
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(fetchOdds, 60000);
+  renderMode();
 }
 
-// Try load sports on first render
+function stopAutoRefresh(showMessage=true){
+  if (refreshTimer){
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+    renderMode();
+    if (showMessage){
+      document.getElementById('snapshotMeta').textContent = 'Auto-refresh stopped. You are free to browse saved snapshots.';
+    }
+  }
+}
+
+async function loadActionables(){
+  const meta = document.getElementById('actionablesMeta');
+  const body = document.getElementById('actionablesAudit');
+  meta.textContent = 'Loading…';
+  const r = await fetch('/api/actionables');
+  const j = await r.json();
+  const rows = j.rows || [];
+  meta.textContent = j.date_et ? `${j.date_et} • ${rows.length} captured actionables` : 'No captured daily actionables yet.';
+  if (!rows.length){
+    body.innerHTML = '<div class="muted">Nothing captured yet.</div>';
+    return;
+  }
+
+  body.innerHTML = rows.slice(0,6).map(row => {
+    const resClass = row.result === 'WIN' ? 'win' : (row.result === 'LOSS' ? 'loss' : 'warn');
+    return `
+      <div class="card" style="margin:10px 0 0 0;">
+        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+          <div><strong>${row.side}</strong> <span class="muted">in</span> ${row.player_a} vs ${row.player_b}</div>
+          <div class="${resClass}">${row.result || 'OPEN'}</div>
+        </div>
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+          ${pill(`Price <strong>${row.price_decimal ?? '—'}</strong> ${row.price_american ? `(${row.price_american > 0 ? '+' : ''}${row.price_american})` : ''}`)}
+          ${pill(`EV_adj <strong>${signed(row.ev_adj)}</strong>`)}
+          ${pill(`Conf <strong>${pct(row.confidence,0)}</strong>`)}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function loadClv(candidateId){
+  const card = document.getElementById('clvCard');
+  const title = document.getElementById('clvTitle');
+  const body = document.getElementById('clvBody');
+  card.style.display = 'block';
+  title.textContent = 'Loading…';
+  body.innerHTML = '';
+
+  const r = await fetch(`/api/candidate/clv?candidate_id=${encodeURIComponent(candidateId)}`);
+  const j = await r.json();
+  if (j.error){
+    title.textContent = j.error;
+    body.innerHTML = '<div class="muted">No CLV data found for this candidate.</div>';
+    return;
+  }
+
+  const c = j.candidate || {};
+  title.textContent = `${c.side} • ${c.player_a} vs ${c.player_b} • candidate #${c.id}`;
+  if (!(j.rows || []).length){
+    body.innerHTML = '<div class="muted">No CLV snapshots stored for this candidate yet.</div>';
+    return;
+  }
+
+  body.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Captured</th>
+          <th>Minutes to start</th>
+          <th>Best price</th>
+          <th>Consensus price</th>
+          <th>Best line</th>
+          <th>Consensus line</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${(j.rows || []).map(row => `
+          <tr>
+            <td>${fmtLocal(row.ts)}</td>
+            <td>${row.minutes_before_start ?? '—'}</td>
+            <td><strong>${row.best_price_decimal ?? '—'}</strong></td>
+            <td>${row.consensus_price_decimal ?? '—'}</td>
+            <td>${row.best_line ?? '—'}</td>
+            <td>${row.consensus_line ?? '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function clearClv(){
+  document.getElementById('clvCard').style.display = 'none';
+  document.getElementById('clvTitle').textContent = '';
+  document.getElementById('clvBody').innerHTML = '';
+}
+
+renderMode();
+renderSummary();
 loadSports();
+loadRecentSnapshots().then(loadLatestSnapshot);
+loadActionables();
 </script>
 
 {% endblock %}

@@ -442,24 +442,33 @@ def create_app():
 
     @app.get("/api/candidates/latest")
     def api_candidates_latest():
-        """Fetch latest ranked candidates from DB (no Odds API call).
+        """Fetch ranked candidates from DB without calling Odds API.
 
         Params:
+          snapshot_id: optional snapshot id (defaults to latest)
           view: actionable|debug|all (default all)
           limit: int (default 50)
         """
         view = (request.args.get("view") or "all").lower()
         limit = int(request.args.get("limit") or 50)
         limit = max(1, min(500, limit))
+        snapshot_id = request.args.get("snapshot_id")
 
         conn = connect()
-        snap = conn.execute("SELECT id, ts, sport_key, markets, regions, top_n, model_version FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        if snapshot_id:
+            snap = conn.execute(
+                "SELECT id, ts, sport_key, markets, regions, top_n, refresh_interval_sec, model_version FROM snapshots WHERE id = ?",
+                (int(snapshot_id),),
+            ).fetchone()
+        else:
+            snap = conn.execute(
+                "SELECT id, ts, sport_key, markets, regions, top_n, refresh_interval_sec, model_version FROM snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         if not snap:
             conn.close()
             return jsonify({"snapshot": None, "candidates": [], "note": "No snapshots yet. Call /api/odds first."})
 
         where = ""
-        params = [snap["id"]]
         if view == "actionable":
             where = " AND actionable = 1"
         elif view == "debug":
@@ -476,7 +485,7 @@ def create_app():
             FROM ranked_candidates
             WHERE snapshot_id = ?
             """ + where + "\nORDER BY ev_adj DESC NULLS LAST, confidence DESC NULLS LAST\nLIMIT ?",
-            (*params, limit),
+            (snap["id"], limit),
         ).fetchall()
         conn.close()
 
@@ -484,6 +493,77 @@ def create_app():
             "snapshot": dict(snap),
             "count": len(rows),
             "candidates": [dict(r) for r in rows],
+        })
+
+    @app.get("/api/snapshots/recent")
+    def api_snapshots_recent():
+        """Return recent refresh snapshots with quick candidate counts for UI browsing."""
+        limit = int(request.args.get("limit") or 12)
+        limit = max(1, min(100, limit))
+
+        conn = connect()
+        rows = conn.execute(
+            """
+            SELECT
+              s.id,
+              s.ts,
+              s.sport_key,
+              s.markets,
+              s.regions,
+              s.top_n,
+              s.refresh_interval_sec,
+              s.model_version,
+              COUNT(rc.id) AS candidate_count,
+              SUM(CASE WHEN rc.actionable = 1 THEN 1 ELSE 0 END) AS actionable_count,
+              MAX(rc.ev_adj) AS best_ev_adj,
+              MAX(rc.confidence) AS best_confidence
+            FROM snapshots s
+            LEFT JOIN ranked_candidates rc ON rc.snapshot_id = s.id
+            GROUP BY s.id, s.ts, s.sport_key, s.markets, s.regions, s.top_n, s.refresh_interval_sec, s.model_version
+            ORDER BY s.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return jsonify({"count": len(rows), "snapshots": [dict(r) for r in rows]})
+
+    @app.get("/api/candidate/clv")
+    def api_candidate_clv():
+        """Return CLV history for a stored candidate id."""
+        candidate_id = request.args.get("candidate_id")
+        if not candidate_id:
+            return jsonify({"error": "candidate_id required"}), 400
+
+        conn = connect()
+        cand = conn.execute(
+            """
+            SELECT id, snapshot_id, match_id, commence_time, player_a, player_b, side, market_type,
+                   line, price_decimal, price_american, book, confidence, ev, ev_adj
+            FROM ranked_candidates
+            WHERE id = ?
+            """,
+            (int(candidate_id),),
+        ).fetchone()
+        if not cand:
+            conn.close()
+            return jsonify({"error": "candidate not found"}), 404
+
+        rows = conn.execute(
+            """
+            SELECT ts, minutes_before_start, best_price_decimal, consensus_price_decimal, best_line, consensus_line
+            FROM clv_snapshots
+            WHERE candidate_id = ?
+            ORDER BY ts ASC
+            """,
+            (int(candidate_id),),
+        ).fetchall()
+        conn.close()
+
+        return jsonify({
+            "candidate": dict(cand),
+            "count": len(rows),
+            "rows": [dict(r) for r in rows],
         })
 
     @app.get("/api/actionables")
