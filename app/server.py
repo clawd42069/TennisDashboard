@@ -48,7 +48,8 @@ def create_app():
         try:
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
             py = sys.executable
-            # import ATP + build features (includes surface Elo build)
+            # Fetch raw Tennis Abstract repos (idempotent) then import ATP + build features (includes surface Elo build)
+            subprocess.check_call(["bash", os.path.join(root, "scripts", "fetch_tennis_abstract.sh")])
             subprocess.check_call([py, os.path.join(root, "scripts", "import_tennis_abstract.py"), "--tour", "atp", "--since-year", "2015"])
             subprocess.check_call([py, os.path.join(root, "scripts", "build_features_atp.py"), "--since-year", "2015", "--recent-n", "10"])
             _bootstrap["status"] = "ok"
