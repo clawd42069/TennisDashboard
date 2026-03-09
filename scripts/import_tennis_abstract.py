@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.db import connect, migrate
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW = ROOT / "data" / "ta_raw"
+RAW = Path(os.getenv("TA_RAW_PATH") or (ROOT / "data" / "ta_raw"))
 
 
 def iter_csv(path: Path):

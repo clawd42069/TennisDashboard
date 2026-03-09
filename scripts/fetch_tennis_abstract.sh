@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RAW_DIR="$ROOT_DIR/data/ta_raw"
+RAW_DIR="${TA_RAW_PATH:-$ROOT_DIR/data/ta_raw}"
 
 mkdir -p "$RAW_DIR"
 
