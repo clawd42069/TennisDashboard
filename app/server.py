@@ -337,10 +337,12 @@ def create_app():
 
         updated = 0
         checked = 0
+        errors = []
         for sport_key in sport_keys:
             try:
                 events, _headers = get_scores(sport_key=sport_key, days_from=days_from)
-            except Exception:
+            except Exception as e:
+                errors.append({"sport_key": sport_key, "error": str(e)})
                 continue
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
 
@@ -371,7 +373,7 @@ def create_app():
         conn.commit()
         conn.close()
 
-        return jsonify({"ok": True, "sport_keys": sport_keys, "checked": checked, "updated": updated})
+        return jsonify({"ok": True, "sport_keys": sport_keys, "checked": checked, "updated": updated, "errors": errors})
 
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
