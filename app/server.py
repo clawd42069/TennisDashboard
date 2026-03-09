@@ -282,6 +282,73 @@ def create_app():
         t.start()
         return jsonify({"ok": True, **_bootstrap})
 
+    # ---------- Admin: settle daily actionables ----------
+
+    def _infer_winner_name(score_event: dict):
+        scores = score_event.get("scores") or []
+        if len(scores) != 2:
+            return None
+        try:
+            a, b = scores[0], scores[1]
+            sa, sb = float(a.get("score")), float(b.get("score"))
+            if sa == sb:
+                return None
+            return a.get("name") if sa > sb else b.get("name")
+        except Exception:
+            return None
+
+    @app.post("/admin/actionables/settle")
+    def admin_actionables_settle():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+        days_from = int(request.args.get("days_from") or 7)
+        conn = connect()
+
+        # Pull distinct sport_keys with open rows
+        sk_rows = conn.execute(
+            "SELECT DISTINCT sport_key FROM daily_actionables WHERE result = 'OPEN' AND sport_key IS NOT NULL"
+        ).fetchall()
+        sport_keys = [r[0] for r in sk_rows]
+
+        updated = 0
+        checked = 0
+        for sport_key in sport_keys:
+            try:
+                events, _headers = get_scores(sport_key=sport_key, days_from=days_from)
+            except Exception:
+                continue
+            by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
+
+            rows = conn.execute(
+                "SELECT id, match_id, side FROM daily_actionables WHERE result = 'OPEN' AND sport_key = ?",
+                (sport_key,),
+            ).fetchall()
+
+            for r in rows:
+                checked += 1
+                event = by_id.get(r["match_id"])
+                if not event or not event.get("completed"):
+                    continue
+                winner = _infer_winner_name(event)
+                if not winner:
+                    conn.execute(
+                        "UPDATE daily_actionables SET score_json = ? WHERE id = ?",
+                        (json.dumps(event), int(r["id"])),
+                    )
+                    continue
+                result = "WIN" if winner == r["side"] else "LOSS"
+                conn.execute(
+                    "UPDATE daily_actionables SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
+                    (result, utc_now_iso(), json.dumps(event), int(r["id"])),
+                )
+                updated += 1
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({"ok": True, "sport_keys": sport_keys, "checked": checked, "updated": updated})
+
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
         """Return a compact list of upcoming/live matches from most recent odds snapshot(s).
