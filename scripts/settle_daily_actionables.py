@@ -53,7 +53,7 @@ def infer_winner_name(score_event: dict) -> str | None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days-from", type=int, default=7)
+    ap.add_argument("--days-from", type=int, default=1)
     args = ap.parse_args()
 
     migrate()
@@ -77,9 +77,10 @@ def main():
 
         events = None
         last_error = None
+        days_from = max(1, min(int(args.days_from or 1), 1))
         for candidate_key in score_key_candidates:
             try:
-                events, _headers = get_scores(sport_key=candidate_key, days_from=args.days_from)
+                events, _headers = get_scores(sport_key=candidate_key, days_from=days_from)
                 break
             except Exception as e:
                 last_error = str(e)

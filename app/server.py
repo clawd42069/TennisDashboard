@@ -297,6 +297,75 @@ def create_app():
         except Exception:
             return None
 
+    def _settle_open_actionables(conn, date_et: str | None = None, days_from: int = 1):
+        """Try to settle OPEN daily actionables using the Odds API scores endpoint.
+
+        Notes:
+        - Tennis scores only support a short lookback; default to 1 day.
+        - We keep failures soft so the UI can still render.
+        """
+        days_from = max(1, min(int(days_from or 1), 1))
+
+        sql = "SELECT DISTINCT sport_key FROM daily_actionables WHERE result = 'OPEN' AND sport_key IS NOT NULL"
+        params = []
+        if date_et:
+            sql += " AND date_et = ?"
+            params.append(date_et)
+        sk_rows = conn.execute(sql, tuple(params)).fetchall()
+        sport_keys = [r[0] for r in sk_rows]
+
+        updated = 0
+        errors = []
+        for sport_key in sport_keys:
+            score_key_candidates = [sport_key]
+            if sport_key.startswith("tennis_atp_"):
+                score_key_candidates.append("tennis_atp")
+            elif sport_key.startswith("tennis_wta_"):
+                score_key_candidates.append("tennis_wta")
+
+            events = None
+            last_error = None
+            for candidate_key in score_key_candidates:
+                try:
+                    events, _headers = get_scores(sport_key=candidate_key, days_from=days_from)
+                    break
+                except Exception as e:
+                    last_error = str(e)
+
+            if events is None:
+                errors.append({"sport_key": sport_key, "error": last_error})
+                continue
+
+            by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
+            row_sql = "SELECT id, match_id, side FROM daily_actionables WHERE result = 'OPEN' AND sport_key = ?"
+            row_params = [sport_key]
+            if date_et:
+                row_sql += " AND date_et = ?"
+                row_params.append(date_et)
+            rows = conn.execute(row_sql, tuple(row_params)).fetchall()
+
+            for r in rows:
+                event = by_id.get(r["match_id"])
+                if not event:
+                    continue
+                if not event.get("completed"):
+                    continue
+                winner = _infer_winner_name(event)
+                if not winner:
+                    conn.execute(
+                        "UPDATE daily_actionables SET score_json = ? WHERE id = ?",
+                        (json.dumps(event), int(r["id"])),
+                    )
+                    continue
+                result = "WIN" if winner == r["side"] else "LOSS"
+                conn.execute(
+                    "UPDATE daily_actionables SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
+                    (result, utc_now_iso(), json.dumps(event), int(r["id"])),
+                )
+                updated += 1
+
+        return {"updated": updated, "errors": errors}
+
     @app.get("/admin/odds/sports")
     def admin_odds_sports():
         if not _auth_ok():
@@ -338,70 +407,22 @@ def create_app():
         if not _auth_ok():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-        days_from = int(request.args.get("days_from") or 7)
+        days_from = int(request.args.get("days_from") or 1)
         conn = connect()
 
-        # Pull distinct sport_keys with open rows
         sk_rows = conn.execute(
             "SELECT DISTINCT sport_key FROM daily_actionables WHERE result = 'OPEN' AND sport_key IS NOT NULL"
         ).fetchall()
         sport_keys = [r[0] for r in sk_rows]
-
-        updated = 0
-        checked = 0
-        errors = []
-        for sport_key in sport_keys:
-            score_key_candidates = [sport_key]
-            if sport_key.startswith("tennis_atp_"):
-                score_key_candidates.append("tennis_atp")
-            elif sport_key.startswith("tennis_wta_"):
-                score_key_candidates.append("tennis_wta")
-
-            events = None
-            last_error = None
-            used_score_key = None
-            for candidate_key in score_key_candidates:
-                try:
-                    events, _headers = get_scores(sport_key=candidate_key, days_from=days_from)
-                    used_score_key = candidate_key
-                    break
-                except Exception as e:
-                    last_error = str(e)
-
-            if events is None:
-                errors.append({"sport_key": sport_key, "score_key_candidates": score_key_candidates, "error": last_error})
-                continue
-
-            by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
-
-            rows = conn.execute(
-                "SELECT id, match_id, side FROM daily_actionables WHERE result = 'OPEN' AND sport_key = ?",
-                (sport_key,),
-            ).fetchall()
-
-            for r in rows:
-                checked += 1
-                event = by_id.get(r["match_id"])
-                if not event or not event.get("completed"):
-                    continue
-                winner = _infer_winner_name(event)
-                if not winner:
-                    conn.execute(
-                        "UPDATE daily_actionables SET score_json = ? WHERE id = ?",
-                        (json.dumps(event), int(r["id"])),
-                    )
-                    continue
-                result = "WIN" if winner == r["side"] else "LOSS"
-                conn.execute(
-                    "UPDATE daily_actionables SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
-                    (result, utc_now_iso(), json.dumps(event), int(r["id"])),
-                )
-                updated += 1
+        open_rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM daily_actionables WHERE result = 'OPEN'"
+        ).fetchone()
+        settle = _settle_open_actionables(conn, days_from=days_from)
 
         conn.commit()
         conn.close()
 
-        return jsonify({"ok": True, "sport_keys": sport_keys, "checked": checked, "updated": updated, "errors": errors})
+        return jsonify({"ok": True, "sport_keys": sport_keys, "checked": int((open_rows or {"n": 0})["n"]), "updated": settle["updated"], "errors": settle["errors"]})
 
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
@@ -592,6 +613,9 @@ def create_app():
         if not date_et:
             conn.close()
             return jsonify({"date_et": None, "count": 0, "rows": []})
+
+        _settle_open_actionables(conn, date_et=date_et, days_from=1)
+        conn.commit()
 
         rows = conn.execute(
             "SELECT * FROM daily_actionables WHERE date_et = ? ORDER BY ev_adj DESC NULLS LAST",
