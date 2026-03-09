@@ -609,6 +609,62 @@ def create_app():
                 ),
             )
 
+        # Optional: capture actionable recommendations into daily_actionables (audit log)
+        # Call /api/odds&capture_daily=1 once per day to snapshot the actionable list.
+        if (request.args.get("capture_daily") or "0") == "1":
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                date_et = dt.astimezone(ET).date().isoformat()
+                created_ts = utc_now_iso()
+                rows = conn.execute(
+                    """
+                    SELECT id as candidate_id, match_id, commence_time, player_a, player_b,
+                           market_type, side, line, book, price_decimal, price_american,
+                           confidence, ev, ev_adj
+                    FROM ranked_candidates
+                    WHERE snapshot_id = ? AND actionable = 1
+                    ORDER BY ev_adj DESC NULLS LAST
+                    """,
+                    (snapshot_id,),
+                ).fetchall()
+
+                for r in rows:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO daily_actionables (
+                          date_et, created_ts,
+                          snapshot_id, candidate_id,
+                          sport_key, match_id, commence_time, player_a, player_b,
+                          market_type, side, line, book, price_decimal, price_american,
+                          confidence, ev, ev_adj,
+                          result
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            date_et,
+                            created_ts,
+                            snapshot_id,
+                            int(r["candidate_id"]),
+                            sport_key,
+                            r["match_id"],
+                            r["commence_time"],
+                            r["player_a"],
+                            r["player_b"],
+                            r["market_type"],
+                            r["side"],
+                            r["line"],
+                            r["book"],
+                            r["price_decimal"],
+                            r["price_american"],
+                            r["confidence"],
+                            r["ev"],
+                            r["ev_adj"],
+                            "OPEN",
+                        ),
+                    )
+            except Exception:
+                pass
+
         conn.commit()
         conn.close()
 
