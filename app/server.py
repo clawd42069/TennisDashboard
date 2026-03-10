@@ -252,6 +252,34 @@ def create_app():
         conn.close()
         return jsonify({"ok": True, "bet": row})
 
+    @app.post("/api/paper/settle")
+    def api_paper_settle():
+        payload = request.get_json(silent=True) or {}
+        bet_id = payload.get("bet_id")
+        result = (payload.get("result") or "").upper()
+        if not bet_id:
+            return jsonify({"ok": False, "error": "bet_id required"}), 400
+        if result not in ("WIN", "LOSS", "PUSH", "OPEN"):
+            return jsonify({"ok": False, "error": "invalid result"}), 400
+        conn = connect()
+        row = conn.execute("SELECT * FROM paper_bets WHERE id = ?", (int(bet_id),)).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "bet not found"}), 404
+        units = float(row["units"] or 0.0)
+        odds_am = row["odds_american"]
+        pnl_units = pnl_units_for_result(result, units, odds_am)
+        pnl_dollars = units_to_dollars(pnl_units, 500.0)
+        settled_ts = utc_now_iso() if result in ("WIN", "LOSS", "PUSH") else None
+        conn.execute(
+            "UPDATE paper_bets SET result = ?, pnl_units = ?, pnl_dollars = ?, settled_ts = ? WHERE id = ?",
+            (result, pnl_units, pnl_dollars, settled_ts, int(bet_id)),
+        )
+        conn.commit()
+        out = conn.execute("SELECT * FROM paper_bets WHERE id = ?", (int(bet_id),)).fetchone()
+        conn.close()
+        return jsonify({"ok": True, "bet": dict(out) if out else {"id": bet_id}})
+
     @app.get("/strategies")
     def strategies():
         """Tab D: strategies + backtests + current selection audit."""

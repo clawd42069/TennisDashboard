@@ -168,7 +168,7 @@ loadCandidates();
   <table>
     <thead>
       <tr>
-        <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Units</th><th>Result</th><th>P/L</th><th>Note</th>
+        <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Units</th><th>Result</th><th>P/L</th><th>Note</th><th>Action</th>
       </tr>
     </thead>
     <tbody id="recentBetsBody">
@@ -193,6 +193,15 @@ loadCandidates();
             {% endif %}
           </strong></td>
           <td class="muted">{{ b.note or '' }}</td>
+          <td>
+            {% if (b.result or 'OPEN') == 'OPEN' %}
+              <button onclick="manualSettle({{ b.id }}, 'WIN')">Win</button>
+              <button onclick="manualSettle({{ b.id }}, 'LOSS')">Loss</button>
+              <button onclick="manualSettle({{ b.id }}, 'PUSH')">Push</button>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
     </tbody>
@@ -255,8 +264,23 @@ function renderRecentBets(bets){
       <td class="muted ${cls}">${res}</td>
       <td class="${cls}"><strong>${pnl}</strong></td>
       <td class="muted">${b.note || ''}</td>
+      <td>${res === 'OPEN' ? `<button onclick="manualSettle(${b.id}, 'WIN')">Win</button> <button onclick="manualSettle(${b.id}, 'LOSS')">Loss</button> <button onclick="manualSettle(${b.id}, 'PUSH')">Push</button>` : '<span class="muted">—</span>'}</td>
     </tr>`;
   }).join('');
+}
+
+async function manualSettle(betId, result){
+  const r = await fetch('/api/paper/settle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bet_id: betId, result })
+  });
+  const j = await r.json();
+  if (!r.ok || !j.ok){
+    alert(j.error || 'Failed to settle bet.');
+    return;
+  }
+  await refreshPaperState();
 }
 
 async function refreshPaperState(){
