@@ -190,46 +190,67 @@ def create_app():
             return None
         return pnl_units * unit_value
 
-    @app.post("/paper/add")
-    def paper_add():
-        odds_dec = request.form.get("odds_decimal")
+    def _insert_paper_bet(conn, payload: dict):
+        odds_dec = payload.get("odds_decimal")
         odds_dec_f = float(odds_dec) if odds_dec not in (None, "") else None
-        odds_am = request.form.get("odds_american")
+        odds_am = payload.get("odds_american")
         odds_am_i = int(odds_am) if odds_am not in (None, "") else None
         if odds_am_i is None and odds_dec_f is not None:
             odds_am_i = dec_to_american(odds_dec_f)
 
-        units = float(request.form.get("units") or 0)
-        result = request.form.get("result") or "OPEN"
+        units = float(payload.get("units") or 0)
+        result = payload.get("result") or "OPEN"
         pnl_units = pnl_units_for_result(result, units, odds_am_i)
         pnl_dollars = units_to_dollars(pnl_units, 500.0)
+        ts = utc_now_iso()
 
-        conn = connect()
-        conn.execute(
+        cur = conn.execute(
             """
-            INSERT INTO paper_bets (ts, match_id, match_label, tournament, player, market, odds_decimal, odds_american, units, note, result, pnl_units, pnl_dollars, settled_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO paper_bets (ts, match_id, match_label, tournament, player, market, odds_decimal, odds_american, units, note, result, pnl_units, pnl_dollars, settled_ts, source_candidate_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                utc_now_iso(),
-                request.form.get("match_id") or None,
-                request.form.get("match_label") or None,
-                request.form.get("tournament") or None,
-                request.form.get("player") or "",
-                request.form.get("market") or "h2h",
+                ts,
+                payload.get("match_id") or None,
+                payload.get("match_label") or None,
+                payload.get("tournament") or None,
+                payload.get("player") or "",
+                payload.get("market") or "h2h",
                 odds_dec_f,
                 odds_am_i,
                 units,
-                request.form.get("note") or None,
+                payload.get("note") or None,
                 result,
                 pnl_units,
                 pnl_dollars,
-                utc_now_iso() if result in ("WIN", "LOSS", "PUSH") else None,
+                ts if result in ("WIN", "LOSS", "PUSH") else None,
+                payload.get("source_candidate_id") or None,
             ),
         )
+        row_id = cur.lastrowid
+        row = conn.execute("SELECT * FROM paper_bets WHERE id = ?", (row_id,)).fetchone()
+        return dict(row) if row else {"id": row_id}
+
+    @app.post("/paper/add")
+    def paper_add():
+        conn = connect()
+        _insert_paper_bet(conn, dict(request.form))
         conn.commit()
         conn.close()
         return redirect(url_for("paper"))
+
+    @app.post("/api/paper/add")
+    def api_paper_add():
+        payload = request.get_json(silent=True) or {}
+        if not payload.get("player"):
+            return jsonify({"ok": False, "error": "player required"}), 400
+        if not payload.get("units"):
+            return jsonify({"ok": False, "error": "units required"}), 400
+        conn = connect()
+        row = _insert_paper_bet(conn, payload)
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "bet": row})
 
     @app.get("/strategies")
     def strategies():

@@ -98,6 +98,45 @@
   <div id="clvBody" style="margin-top:10px;"></div>
 </div>
 
+<div id="betModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:999; padding:24px; overflow:auto;">
+  <div class="card" style="max-width:760px; margin:30px auto;">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+      <div>
+        <h3 style="margin:0;">Add to Bet Tracker</h3>
+        <div id="betModalTitle" class="muted" style="margin-top:6px;"></div>
+      </div>
+      <button onclick="closeBetModal()">Close</button>
+    </div>
+
+    <form id="betModalForm" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; margin-top:14px;">
+      <input id="betPlayer" placeholder="Player" />
+      <input id="betMatchLabel" placeholder="Match" />
+      <input id="betTournament" placeholder="Tournament" />
+      <select id="betMarket">
+        <option value="h2h">h2h</option>
+        <option value="spreads">spreads</option>
+        <option value="totals">totals</option>
+      </select>
+      <input id="betOddsAm" placeholder="American odds" />
+      <input id="betOddsDec" placeholder="Decimal odds" />
+      <input id="betUnits" placeholder="Units" value="1" />
+      <select id="betResult">
+        <option value="OPEN">OPEN</option>
+        <option value="WIN">WIN</option>
+        <option value="LOSS">LOSS</option>
+        <option value="PUSH">PUSH</option>
+      </select>
+      <input id="betNote" placeholder="Note" style="grid-column:span 2;" />
+      <div class="muted" id="betModalHint" style="grid-column:span 2;">Prefilled from the actionable card. Adjust units or note, then save.</div>
+      <div style="grid-column:span 2; display:flex; gap:10px; justify-content:flex-end;">
+        <a href="/paper" class="pill" style="text-decoration:none;">Open Bet Tracker</a>
+        <button type="submit">Save bet</button>
+      </div>
+    </form>
+    <div id="betModalStatus" class="muted" style="margin-top:12px;"></div>
+  </div>
+</div>
+
 <script>
 let refreshTimer = null;
 let actionablesTimer = null;
@@ -182,7 +221,13 @@ function renderSummary(){
   `;
 }
 
-function candidateCard(c, compact=false){
+function decToAmerican(dec){
+  if (!dec || dec <= 1) return '';
+  if (dec >= 2) return `+${Math.round((dec-1)*100)}`;
+  return `${Math.round(-100/(dec-1))}`;
+}
+
+function candidateCard(c, compact=false, section='debug'){
   const reasons = (c.reasons || []).map(r => `<li>${r}</li>`).join('');
   const drill = [
     ['Candidate ID', c.id ?? '—'],
@@ -229,6 +274,7 @@ function candidateCard(c, compact=false){
       </details>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        ${section === 'actionable' ? `<button onclick="openBetModal(decodeURIComponent(this.dataset.candidate))" data-candidate="${encodeURIComponent(JSON.stringify(c))}">Track bet</button>` : ''}
         ${c.id ? `<button onclick="loadClv(${c.id})">Show CLV</button>` : ''}
       </div>
     </div>
@@ -241,7 +287,7 @@ function renderActionable(){
     div.innerHTML = `<div class="muted" style="margin-top:10px;">No actionable candidates in this snapshot.</div>`;
     return;
   }
-  div.innerHTML = lastActionable.map(c => candidateCard(c, false)).join('');
+  div.innerHTML = lastActionable.map(c => candidateCard(c, false, 'actionable')).join('');
 }
 
 function renderWatchlist(){
@@ -250,8 +296,65 @@ function renderWatchlist(){
     div.innerHTML = `<div class="muted" style="margin-top:10px;">No watchlist candidates in this snapshot.</div>`;
     return;
   }
-  div.innerHTML = lastWatchlist.map(c => candidateCard(c, true)).join('');
+  div.innerHTML = lastWatchlist.map(c => candidateCard(c, true, 'watchlist')).join('');
 }
+
+function openBetModal(candidateJson){
+  const c = JSON.parse(candidateJson);
+  document.getElementById('betModal').style.display = 'block';
+  document.getElementById('betModalTitle').textContent = `${c.side} • ${c.player_a} vs ${c.player_b}`;
+  document.getElementById('betPlayer').value = c.side || '';
+  document.getElementById('betMatchLabel').value = `${c.player_a || ''} vs ${c.player_b || ''}`;
+  document.getElementById('betTournament').value = c.tournament || '';
+  document.getElementById('betMarket').value = c.market_type === 'ML' ? 'h2h' : (String(c.market_type || '').toLowerCase());
+  document.getElementById('betOddsAm').value = c.price_american || decToAmerican(c.price_decimal);
+  document.getElementById('betOddsDec').value = c.price_decimal || '';
+  document.getElementById('betUnits').value = c.units_suggested || 1;
+  document.getElementById('betResult').value = 'OPEN';
+  document.getElementById('betNote').value = `From Matchup Report${c.ev_adj !== undefined && c.ev_adj !== null ? ` • EV_adj ${signed(c.ev_adj)}` : ''}`;
+  document.getElementById('betModalForm').dataset.candidateId = c.id || '';
+  document.getElementById('betModalForm').dataset.matchId = c.match_id || '';
+  document.getElementById('betModalStatus').textContent = '';
+}
+
+function closeBetModal(){
+  document.getElementById('betModal').style.display = 'none';
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'betModal') closeBetModal();
+});
+
+document.getElementById('betModalForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const payload = {
+    source_candidate_id: form.dataset.candidateId || null,
+    match_id: form.dataset.matchId || null,
+    match_label: document.getElementById('betMatchLabel').value,
+    tournament: document.getElementById('betTournament').value,
+    player: document.getElementById('betPlayer').value,
+    market: document.getElementById('betMarket').value,
+    odds_american: document.getElementById('betOddsAm').value,
+    odds_decimal: document.getElementById('betOddsDec').value,
+    units: document.getElementById('betUnits').value,
+    result: document.getElementById('betResult').value,
+    note: document.getElementById('betNote').value,
+  };
+  const status = document.getElementById('betModalStatus');
+  status.textContent = 'Saving…';
+  const r = await fetch('/api/paper/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const j = await r.json();
+  if (!r.ok || !j.ok){
+    status.textContent = j.error || 'Failed to save bet.';
+    return;
+  }
+  status.innerHTML = `Saved. <a href="/paper">Open Bet Tracker</a> to see it in Recent bets.`;
+});
 
 function renderPage(){
   const outDiv = document.getElementById('outputs');
