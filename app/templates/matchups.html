@@ -20,8 +20,8 @@
     <button onclick="loadSports()">Load tennis feeds</button>
     <select id="sportKey"></select>
     <select id="markets">
-      <option value="h2h">h2h (moneyline)</option>
-      <option value="h2h,spreads,totals">h2h + spreads + totals</option>
+      <option value="h2h">ML</option>
+      <option value="h2h,spreads,totals">ML + spreads + totals</option>
     </select>
     <button onclick="fetchOdds()">Fetch live odds</button>
     <button onclick="stopAutoRefresh()">Stop refresh</button>
@@ -113,7 +113,7 @@
       <input id="betMatchLabel" placeholder="Match" />
       <input id="betTournament" placeholder="Tournament" />
       <select id="betMarket">
-        <option value="h2h">h2h</option>
+        <option value="h2h">ML</option>
         <option value="spreads">spreads</option>
         <option value="totals">totals</option>
       </select>

@@ -66,7 +66,7 @@
       <option value="">Player</option>
     </select>
     <select name="market">
-      <option value="h2h">h2h</option>
+      <option value="h2h">ML</option>
       <option value="spreads">spreads</option>
       <option value="totals">totals</option>
     </select>
@@ -178,7 +178,7 @@ loadCandidates();
           <td>{{ b.tournament or '' }}</td>
           <td class="muted">{{ b.match_label or b.match_id or '' }}</td>
           <td><strong>{{ b.player }}</strong></td>
-          <td class="muted">{{ b.market }}</td>
+          <td class="muted">{{ 'ML' if b.market == 'h2h' else b.market }}</td>
           <td><strong>{{ b.odds_american or '' }}</strong></td>
           <td><strong>{{ b.units }}</strong></td>
           {% set res = b.result or 'OPEN' %}
@@ -222,6 +222,7 @@ function fmtEt(iso){
 }
 function money(v){ return v === null || v === undefined ? '—' : `$${Number(v).toFixed(2)}`; }
 function pct(v){ return v === null || v === undefined ? '—' : `${(Number(v)*100).toFixed(1)}%`; }
+function displayMarket(v){ return (v || '').toLowerCase() === 'h2h' ? 'ML' : (v || ''); }
 
 function renderPaperSummary(perf){
   document.getElementById('paperSummaryCards').innerHTML = `
@@ -258,7 +259,7 @@ function renderRecentBets(bets){
       <td>${b.tournament || ''}</td>
       <td class="muted">${b.match_label || b.match_id || ''}</td>
       <td><strong>${b.player || ''}</strong></td>
-      <td class="muted">${b.market || ''}</td>
+      <td class="muted">${displayMarket(b.market)}</td>
       <td><strong>${b.odds_american || ''}</strong></td>
       <td><strong>${b.units || ''}</strong></td>
       <td class="muted ${cls}">${res}</td>
