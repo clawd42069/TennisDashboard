@@ -317,6 +317,29 @@ def migrate():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_date ON daily_watchlist(date_et);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_match ON daily_watchlist(match_id);")
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS score_event_archive (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source TEXT NOT NULL,
+          sport_key TEXT,
+          event_id TEXT,
+          home_team TEXT,
+          away_team TEXT,
+          commence_time TEXT,
+          completed INTEGER,
+          winner_name TEXT,
+          scores_json TEXT,
+          last_update TEXT,
+          fetched_ts TEXT NOT NULL,
+          payload_json TEXT,
+          UNIQUE(source, event_id, fetched_ts)
+        );
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_score_event_archive_event ON score_event_archive(event_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_score_event_archive_teams ON score_event_archive(home_team, away_team);")
+
     # ---------------- Paper bets (existing) ----------------
     cur.execute(
         """

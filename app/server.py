@@ -350,6 +350,61 @@ def create_app():
         except Exception:
             return None
 
+    def _archive_score_events(conn, source: str, sport_key: str, events: list[dict]):
+        fetched_ts = utc_now_iso()
+        for event in (events or []):
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO score_event_archive (
+                      source, sport_key, event_id, home_team, away_team, commence_time,
+                      completed, winner_name, scores_json, last_update, fetched_ts, payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        source,
+                        sport_key,
+                        event.get("id"),
+                        event.get("home_team"),
+                        event.get("away_team"),
+                        event.get("commence_time"),
+                        1 if event.get("completed") else 0,
+                        _infer_winner_name(event),
+                        json.dumps(event.get("scores")) if event.get("scores") is not None else None,
+                        event.get("last_update"),
+                        fetched_ts,
+                        json.dumps(event),
+                    ),
+                )
+            except Exception:
+                pass
+
+    def _load_archived_result(conn, match_id: str | None, player_a: str | None, player_b: str | None, commence_time: str | None):
+        if match_id:
+            row = conn.execute(
+                """
+                SELECT winner_name, payload_json FROM score_event_archive
+                WHERE event_id = ? AND completed = 1 AND winner_name IS NOT NULL
+                ORDER BY fetched_ts DESC LIMIT 1
+                """,
+                (match_id,),
+            ).fetchone()
+            if row:
+                return dict(row)
+        if player_a and player_b:
+            row = conn.execute(
+                """
+                SELECT winner_name, payload_json FROM score_event_archive
+                WHERE completed = 1 AND winner_name IS NOT NULL
+                  AND ((home_team = ? AND away_team = ?) OR (home_team = ? AND away_team = ?))
+                ORDER BY fetched_ts DESC LIMIT 1
+                """,
+                (player_a, player_b, player_b, player_a),
+            ).fetchone()
+            if row:
+                return dict(row)
+        return None
+
     def _settle_open_daily_rows(conn, table_name: str, date_et: str | None = None, days_from: int = 1):
         """Settle OPEN daily rows (actionables/watchlist) from score feed."""
         days_from = max(1, min(int(days_from or 1), 1))
@@ -384,8 +439,9 @@ def create_app():
                 errors.append({"sport_key": sport_key, "error": last_error})
                 continue
 
+            _archive_score_events(conn, "odds_api", sport_key, events or [])
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
-            row_sql = f"SELECT id, match_id, side FROM {table_name} WHERE result = 'OPEN' AND sport_key = ?"
+            row_sql = f"SELECT id, match_id, side, player_a, player_b, commence_time FROM {table_name} WHERE result = 'OPEN' AND sport_key = ?"
             row_params = [sport_key]
             if date_et:
                 row_sql += " AND date_et = ?"
@@ -394,19 +450,22 @@ def create_app():
 
             for r in rows:
                 event = by_id.get(r["match_id"])
-                if not event or not event.get("completed"):
-                    continue
-                winner = _infer_winner_name(event)
+                winner = None
+                payload_json = None
+                if event and event.get("completed"):
+                    winner = _infer_winner_name(event)
+                    payload_json = json.dumps(event)
+                else:
+                    archived = _load_archived_result(conn, r["match_id"], r["player_a"], r["player_b"], r["commence_time"])
+                    if archived:
+                        winner = archived.get("winner_name")
+                        payload_json = archived.get("payload_json")
                 if not winner:
-                    conn.execute(
-                        f"UPDATE {table_name} SET score_json = ? WHERE id = ?",
-                        (json.dumps(event), int(r["id"])),
-                    )
                     continue
                 result = "WIN" if winner == r["side"] else "LOSS"
                 conn.execute(
                     f"UPDATE {table_name} SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
-                    (result, utc_now_iso(), json.dumps(event), int(r["id"])),
+                    (result, utc_now_iso(), payload_json, int(r["id"])),
                 )
                 updated += 1
 
@@ -469,10 +528,11 @@ def create_app():
                 errors.append({"sport_key": sport_key, "error": last_error})
                 continue
 
+            _archive_score_events(conn, "odds_api", sport_key, events or [])
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
             rows = conn.execute(
                 """
-                SELECT DISTINCT pb.id, pb.match_id, pb.player, pb.market, pb.units, pb.odds_american
+                SELECT DISTINCT pb.id, pb.match_id, pb.player, pb.market, pb.units, pb.odds_american, os.payload_json
                 FROM paper_bets pb
                 JOIN odds_snapshots os ON os.match_id = pb.match_id
                 WHERE COALESCE(pb.result, 'OPEN') = 'OPEN'
@@ -483,12 +543,23 @@ def create_app():
 
             for r in rows:
                 event = by_id.get(r["match_id"])
-                if not event or not event.get("completed"):
-                    continue
                 market = (r["market"] or "").lower()
                 if market != "h2h":
                     continue
-                winner = _infer_winner_name(event)
+                winner = None
+                if event and event.get("completed"):
+                    winner = _infer_winner_name(event)
+                else:
+                    player_a = player_b = None
+                    try:
+                        payload = json.loads(r["payload_json"] or '{}')
+                        player_a = payload.get('away_team')
+                        player_b = payload.get('home_team')
+                    except Exception:
+                        pass
+                    archived = _load_archived_result(conn, r["match_id"], player_a, player_b, None)
+                    if archived:
+                        winner = archived.get("winner_name")
                 if not winner:
                     continue
                 result = "WIN" if winner == r["player"] else "LOSS"
