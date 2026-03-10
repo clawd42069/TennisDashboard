@@ -72,7 +72,6 @@
     </select>
 
     <input id="oddsAm" name="odds_american" placeholder="Odds e.g. -135 / +220" />
-    <input id="oddsDec" name="odds_decimal" type="hidden" />
     <input name="units" placeholder="Units" required />
     <select name="result">
       <option value="OPEN">OPEN</option>
@@ -156,7 +155,6 @@ async function loadCandidates(){
     if (!opt) return;
     const dec = parseFloat(opt.dataset.dec);
     if (dec){
-      document.getElementById('oddsDec').value = dec;
       document.getElementById('oddsAm').value = decToAmerican(dec);
     }
   });

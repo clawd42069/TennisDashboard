@@ -118,8 +118,8 @@
         <option value="totals">totals</option>
       </select>
       <input id="betOddsAm" placeholder="American odds" />
-      <input id="betOddsDec" placeholder="Decimal odds" />
       <input id="betUnits" placeholder="Units" value="1" />
+      <div class="muted">Odds shown in American format only.</div>
       <select id="betResult">
         <option value="OPEN">OPEN</option>
         <option value="WIN">WIN</option>
@@ -183,6 +183,13 @@ function pill(text){
   return `<span class="pill">${text}</span>`;
 }
 
+function americanOddsText(v){
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
 function modeText(){
   return liveMode ? 'Live mode' : 'Saved snapshot mode';
 }
@@ -231,7 +238,7 @@ function candidateCard(c, compact=false, section='debug'){
   const reasons = (c.reasons || []).map(r => `<li>${r}</li>`).join('');
   const drill = [
     ['Candidate ID', c.id ?? '—'],
-    ['Price', `${c.price_decimal ?? '—'} ${c.price_american ? `(${c.price_american > 0 ? '+' : ''}${c.price_american})` : ''}`],
+    ['Price', americanOddsText(c.price_american || decToAmerican(c.price_decimal))],
     ['Model', `p0 ${num(c.p0)} → p ${num(c.p_final)} | q ${num(c.q_implied)}`],
     ['Edge', `EV ${signed(c.ev)} | EV_adj ${signed(c.ev_adj)}`],
     ['Confidence', pct(c.confidence, 0)],
@@ -253,7 +260,7 @@ function candidateCard(c, compact=false, section='debug'){
       </div>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        ${pill(`Price <strong>${c.price_decimal ?? '—'}</strong> ${c.price_american ? `(${c.price_american > 0 ? '+' : ''}${c.price_american})` : ''}`)}
+        ${pill(`Price <strong>${americanOddsText(c.price_american || decToAmerican(c.price_decimal))}</strong>`)}
         ${pill(`p0 <strong>${num(c.p0)}</strong>`)}
         ${pill(`p <strong>${num(c.p_final)}</strong>`)}
         ${pill(`q <strong>${num(c.q_implied)}</strong>`)}
@@ -308,7 +315,6 @@ function openBetModal(candidateJson){
   document.getElementById('betTournament').value = c.tournament || '';
   document.getElementById('betMarket').value = c.market_type === 'ML' ? 'h2h' : (String(c.market_type || '').toLowerCase());
   document.getElementById('betOddsAm').value = c.price_american || decToAmerican(c.price_decimal);
-  document.getElementById('betOddsDec').value = c.price_decimal || '';
   document.getElementById('betUnits').value = c.units_suggested || 1;
   document.getElementById('betResult').value = 'OPEN';
   document.getElementById('betNote').value = `From Matchup Report${c.ev_adj !== undefined && c.ev_adj !== null ? ` • EV_adj ${signed(c.ev_adj)}` : ''}`;
@@ -336,7 +342,6 @@ document.getElementById('betModalForm').addEventListener('submit', async (e) => 
     player: document.getElementById('betPlayer').value,
     market: document.getElementById('betMarket').value,
     odds_american: document.getElementById('betOddsAm').value,
-    odds_decimal: document.getElementById('betOddsDec').value,
     units: document.getElementById('betUnits').value,
     result: document.getElementById('betResult').value,
     note: document.getElementById('betNote').value,
@@ -545,7 +550,7 @@ async function loadActionables(){
           <div class="${resClass}">${status}</div>
         </div>
         <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-          ${pill(`Price <strong>${row.price_decimal ?? '—'}</strong> ${row.price_american ? `(${row.price_american > 0 ? '+' : ''}${row.price_american})` : ''}`)}
+          ${pill(`Price <strong>${americanOddsText(row.price_american || decToAmerican(row.price_decimal))}</strong>`)}
           ${pill(`EV_adj <strong>${signed(row.ev_adj)}</strong>`)}
           ${pill(`Conf <strong>${pct(row.confidence,0)}</strong>`)}
         </div>
@@ -595,8 +600,8 @@ async function loadClv(candidateId){
           <tr>
             <td>${fmtLocal(row.ts)}</td>
             <td>${row.minutes_before_start ?? '—'}</td>
-            <td><strong>${row.best_price_decimal ?? '—'}</strong></td>
-            <td>${row.consensus_price_decimal ?? '—'}</td>
+            <td><strong>${americanOddsText(decToAmerican(row.best_price_decimal))}</strong></td>
+            <td>${americanOddsText(decToAmerican(row.consensus_price_decimal))}</td>
             <td>${row.best_line ?? '—'}</td>
             <td>${row.consensus_line ?? '—'}</td>
           </tr>
