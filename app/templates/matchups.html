@@ -98,8 +98,8 @@
   <div id="clvBody" style="margin-top:10px;"></div>
 </div>
 
-<div id="betModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:999; padding:24px; overflow:auto;">
-  <div class="card" style="max-width:760px; margin:30px auto;">
+<div id="betModal" style="display:none; position:fixed; inset:0; background:rgba(3,8,20,.78); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index:9999; padding:24px; overflow:auto;">
+  <div class="card" style="max-width:760px; margin:30px auto; position:relative; z-index:10000; background:#0f172a; border:1px solid rgba(255,255,255,.10); box-shadow:0 20px 70px rgba(0,0,0,.45); opacity:1;">
     <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
       <div>
         <h3 style="margin:0;">Add to Bet Tracker</h3>
@@ -108,7 +108,7 @@
       <button onclick="closeBetModal()">Close</button>
     </div>
 
-    <form id="betModalForm" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; margin-top:14px;">
+    <form id="betModalForm" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; margin-top:14px; position:relative; z-index:10001;">
       <input id="betPlayer" placeholder="Player" />
       <input id="betMatchLabel" placeholder="Match" />
       <input id="betTournament" placeholder="Tournament" />
@@ -127,8 +127,8 @@
         <option value="PUSH">PUSH</option>
       </select>
       <input id="betNote" placeholder="Note" style="grid-column:span 2;" />
-      <div class="muted" id="betModalHint" style="grid-column:span 2;">Prefilled from the actionable card. Adjust units or note, then save.</div>
-      <div style="grid-column:span 2; display:flex; gap:10px; justify-content:flex-end;">
+      <div class="muted" id="betModalHint" style="grid-column:span 2; position:relative; z-index:10001;">Prefilled from the actionable card. Adjust units or note, then save.</div>
+      <div style="grid-column:span 2; display:flex; gap:10px; justify-content:flex-end; position:relative; z-index:10001;">
         <a href="/paper" class="pill" style="text-decoration:none;">Open Bet Tracker</a>
         <button type="submit">Save bet</button>
       </div>
