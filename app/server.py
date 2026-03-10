@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from types import SimpleNamespace
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import threading
@@ -232,13 +233,14 @@ def create_app():
 
     @app.get("/strategies")
     def strategies():
-        """Tab D: strategies + backtests (stub until historical DB is integrated)."""
+        """Tab D: strategies + backtests + current selection audit."""
         conn = connect()
         rows = conn.execute(
             "SELECT * FROM strategies ORDER BY id DESC LIMIT 200"
         ).fetchall()
+        audit = _strategy_audit_summary(conn)
         conn.close()
-        return render_template("strategies.html", strategies=rows)
+        return render_template("strategies.html", strategies=rows, audit=audit)
 
     @app.get("/player")
     def player():
@@ -513,7 +515,7 @@ def create_app():
 
         Params:
           snapshot_id: optional snapshot id (defaults to latest)
-          view: actionable|debug|all (default all)
+          view: actionable|watchlist|debug|all (default all)
           limit: int (default 50)
         """
         view = (request.args.get("view") or "all").lower()
@@ -538,13 +540,15 @@ def create_app():
         where = ""
         if view == "actionable":
             where = " AND actionable = 1"
+        elif view == "watchlist":
+            where = " AND view_mode = 'watchlist'"
         elif view == "debug":
-            where = ""
+            where = " AND view_mode = 'debug'"
         elif view == "all":
             where = ""
         else:
             conn.close()
-            return jsonify({"error": "invalid view (use actionable|debug|all)"}), 400
+            return jsonify({"error": "invalid view (use actionable|watchlist|debug|all)"}), 400
 
         rows = conn.execute(
             """
@@ -680,6 +684,13 @@ def create_app():
 
         return jsonify({"date_et": date_et, "count": len(out), "rows": out})
 
+    @app.get("/api/strategy/audit")
+    def api_strategy_audit():
+        conn = connect()
+        audit = _strategy_audit_summary(conn)
+        conn.close()
+        return jsonify(audit)
+
     @app.get("/api/style/player")
     def api_style_player():
         """Lookup a player's MCP style profile (men).
@@ -716,6 +727,155 @@ def create_app():
             return "Clay"
         return None
 
+    def _selection_thresholds():
+        return {
+            "actionable_max_odds": float(os.getenv("ACTIONABLE_MAX_ODDS_DEC") or 5.0),
+            "actionable_min_conf": float(os.getenv("ACTIONABLE_MIN_CONF") or 0.66),
+            "actionable_min_ev": float(os.getenv("ACTIONABLE_MIN_EV") or 0.03),
+            "actionable_min_ev_adj": float(os.getenv("ACTIONABLE_MIN_EV_ADJ") or 0.03),
+            "actionable_max_edge": float(os.getenv("ACTIONABLE_MAX_EDGE") or 0.10),
+            "watchlist_max_odds": float(os.getenv("WATCHLIST_MAX_ODDS_DEC") or 12.0),
+            "watchlist_min_conf": float(os.getenv("WATCHLIST_MIN_CONF") or 0.58),
+            "watchlist_min_ev": float(os.getenv("WATCHLIST_MIN_EV") or 0.015),
+            "watchlist_min_ev_adj": float(os.getenv("WATCHLIST_MIN_EV_ADJ") or 0.015),
+        }
+
+    def _classify_candidate(c, thresholds: dict) -> tuple[str, bool]:
+        if c.price_decimal is None or c.ev is None or c.ev_adj is None or c.q_implied is None or c.p_final is None:
+            return "debug", False
+
+        model_edge = abs((c.p_final or 0.0) - (c.q_implied or 0.0))
+
+        actionable = (
+            c.price_decimal <= thresholds["actionable_max_odds"]
+            and (c.confidence or 0.0) >= thresholds["actionable_min_conf"]
+            and c.ev >= thresholds["actionable_min_ev"]
+            and c.ev_adj >= thresholds["actionable_min_ev_adj"]
+            and model_edge <= thresholds["actionable_max_edge"]
+        )
+        if actionable:
+            return "actionable", True
+
+        watchlist = (
+            c.price_decimal <= thresholds["watchlist_max_odds"]
+            and (c.confidence or 0.0) >= thresholds["watchlist_min_conf"]
+            and c.ev >= thresholds["watchlist_min_ev"]
+            and c.ev_adj >= thresholds["watchlist_min_ev_adj"]
+        )
+        if watchlist:
+            return "watchlist", False
+
+        return "debug", False
+
+    def _strategy_audit_summary(conn):
+        latest = conn.execute(
+            "SELECT id FROM snapshots ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+        latest_ids = [int(r[0]) for r in latest]
+
+        summary = {
+            "latest_snapshot_count": len(latest_ids),
+            "latest_actionables": {},
+            "latest_watchlist": {},
+            "settled_actionables": {},
+            "notes": [],
+        }
+        thresholds = _selection_thresholds()
+        summary["thresholds"] = thresholds
+        if not latest_ids:
+            summary["notes"].append("No snapshots available yet.")
+            return summary
+
+        placeholders = ",".join("?" for _ in latest_ids)
+        rows = conn.execute(
+            f"""
+            SELECT price_decimal, confidence, ev, ev_adj, p_final, q_implied
+            FROM ranked_candidates
+            WHERE snapshot_id IN ({placeholders})
+            """,
+            tuple(latest_ids),
+        ).fetchall()
+
+        actionables = []
+        watchlist = []
+        for row in rows:
+            item = SimpleNamespace(**dict(row))
+            view_mode, is_actionable = _classify_candidate(item, thresholds)
+            if is_actionable:
+                actionables.append(dict(row))
+            elif view_mode == "watchlist":
+                watchlist.append(dict(row))
+
+        def summarize(items):
+            if not items:
+                return {"n": 0, "avg_odds": None, "max_odds": None, "avg_conf": None, "avg_ev": None, "avg_ev_adj": None}
+            odds = [x["price_decimal"] for x in items if x.get("price_decimal") is not None]
+            confs = [x["confidence"] for x in items if x.get("confidence") is not None]
+            evs = [x["ev"] for x in items if x.get("ev") is not None]
+            ev_adjs = [x["ev_adj"] for x in items if x.get("ev_adj") is not None]
+            return {
+                "n": len(items),
+                "avg_odds": round(sum(odds) / len(odds), 2) if odds else None,
+                "max_odds": round(max(odds), 2) if odds else None,
+                "avg_conf": round(sum(confs) / len(confs), 3) if confs else None,
+                "avg_ev": round(sum(evs) / len(evs), 3) if evs else None,
+                "avg_ev_adj": round(sum(ev_adjs) / len(ev_adjs), 3) if ev_adjs else None,
+            }
+
+        summary["latest_actionables"] = summarize(actionables)
+        summary["latest_watchlist"] = summarize(watchlist)
+
+        def odds_bucket_label(price):
+            if price is None:
+                return "unknown"
+            if price < 1.8:
+                return "fav_lt_1.8"
+            if price < 2.5:
+                return "mid_1.8_2.5"
+            if price < 5.0:
+                return "dog_2.5_5.0"
+            return "longshot_5_plus"
+
+        buckets = {}
+        for item in actionables:
+            bucket = odds_bucket_label(item.get("price_decimal"))
+            buckets.setdefault(bucket, []).append(item)
+        summary["latest_actionables"]["odds_buckets"] = [
+            {
+                "bucket": bucket,
+                "n": len(items),
+                "avg_ev_adj": round(sum(x["ev_adj"] for x in items if x.get("ev_adj") is not None) / len(items), 3),
+                "avg_conf": round(sum(x["confidence"] for x in items if x.get("confidence") is not None) / len(items), 3),
+            }
+            for bucket, items in sorted(buckets.items())
+        ]
+
+        settled = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS settled_n,
+              SUM(CASE WHEN result = 'WIN' THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN result = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+              ROUND(AVG(price_decimal), 2) AS avg_odds,
+              ROUND(AVG(confidence), 3) AS avg_conf,
+              ROUND(AVG(ev_adj), 3) AS avg_ev_adj
+            FROM daily_actionables
+            WHERE result IN ('WIN', 'LOSS')
+            """
+        ).fetchone()
+        summary["settled_actionables"] = dict(settled) if settled else {}
+
+        settled_n = int((settled or {"settled_n": 0})["settled_n"] or 0)
+        if settled_n > 0:
+            wins = int((settled or {"wins": 0})["wins"] or 0)
+            summary["settled_actionables"]["win_rate"] = round(wins / settled_n, 3)
+        else:
+            summary["notes"].append("Not enough settled actionables yet for a real threshold backtest.")
+
+        summary["notes"].append("Audit applies the current selection thresholds to the most recent 50 snapshots, even if those snapshots were generated before the new rules shipped.")
+        summary["notes"].append("Current actionable design favors lower-variance selections; high-EV fragile dogs are demoted to watchlist.")
+        return summary
+
     def player_id_from_name(conn, name: str | None):
         if not name:
             return None
@@ -738,7 +898,7 @@ def create_app():
 
         Returns both:
         - legacy `outputs` (implied probs from first bookmaker)
-        - new `candidates_debug` + `candidates_actionable`
+        - new `candidates_debug` + `candidates_watchlist` + `candidates_actionable`
         """
         sport_key = request.args.get("sport_key")
         markets = request.args.get("markets", "h2h")
@@ -801,27 +961,18 @@ def create_app():
         # ---------------- Candidate generation (v0: ML only) ----------------
         candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=top_n)
 
-        # Actionable filter (happy-medium defaults):
-        # - avoid ultra-longshots until we have richer features + backtests
-        # - require real edge (EV) AND decent confidence
-        MAX_ODDS_DEC = float(os.getenv("ACTIONABLE_MAX_ODDS_DEC") or 12.0)
-        MIN_CONF = float(os.getenv("ACTIONABLE_MIN_CONF") or 0.62)
-        MIN_EV = float(os.getenv("ACTIONABLE_MIN_EV") or 0.02)  # +2% per 1u risk
-        MIN_EV_ADJ = float(os.getenv("ACTIONABLE_MIN_EV_ADJ") or 0.02)
+        thresholds = _selection_thresholds()
 
         actionable = []
+        watchlist = []
+        classified = []
         for c in candidates:
-            if c.price_decimal is None or c.ev is None or c.ev_adj is None:
-                continue
-            if c.price_decimal > MAX_ODDS_DEC:
-                continue
-            if (c.confidence or 0) < MIN_CONF:
-                continue
-            if c.ev < MIN_EV:
-                continue
-            if c.ev_adj < MIN_EV_ADJ:
-                continue
-            actionable.append(c)
+            view_mode, is_actionable = _classify_candidate(c, thresholds)
+            classified.append((c, view_mode, is_actionable))
+            if is_actionable:
+                actionable.append(c)
+            elif view_mode == "watchlist":
+                watchlist.append(c)
 
         def cand_to_dict(c):
             return {
@@ -848,7 +999,7 @@ def create_app():
 
         # persist candidates
         created_at = ts
-        for c in candidates:
+        for c, view_mode, is_actionable in classified:
             conn.execute(
                 """
                 INSERT INTO ranked_candidates (
@@ -888,8 +1039,8 @@ def create_app():
                     None,
                     None,
                     None,
-                    "debug",
-                    1 if c in actionable else 0,
+                    view_mode,
+                    1 if is_actionable else 0,
                     None,
                 ),
             )
@@ -1000,7 +1151,9 @@ def create_app():
             "outputs": outputs,
             "ts": ts,
             "snapshot_id": snapshot_id,
+            "selection_thresholds": thresholds,
             "candidates_debug": [cand_to_dict(c) for c in candidates],
+            "candidates_watchlist": [cand_to_dict(c) for c in watchlist],
             "candidates_actionable": [cand_to_dict(c) for c in actionable],
         })
 

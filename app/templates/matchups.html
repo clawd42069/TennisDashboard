@@ -54,11 +54,21 @@
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
     <div>
       <h3 style="margin:0;">Actionable shortlist</h3>
-      <div class="muted">Filtered candidates from the currently loaded snapshot.</div>
+      <div class="muted">Highest-conviction candidates only.</div>
     </div>
     <div class="muted">Sorted by EV_adj</div>
   </div>
   <div id="actionable"></div>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+    <div>
+      <h3 style="margin:0;">Watchlist</h3>
+      <div class="muted">Interesting edges that are too fragile for true actionable status.</div>
+    </div>
+  </div>
+  <div id="watchlist"></div>
 </div>
 
 <div class="card">
@@ -93,6 +103,7 @@ let refreshTimer = null;
 let actionablesTimer = null;
 let lastOutputs = [];
 let lastActionable = [];
+let lastWatchlist = [];
 let page = 1;
 const pageSize = 8;
 const ACTIONABLES_POLL_MS = 15000;
@@ -159,8 +170,8 @@ function renderSummary(){
       <div class="muted">markets: ${snap.markets || '—'}</div>
     </div>
     <div class="card" style="margin:0;">
-      <div class="muted">Actionable / debug</div>
-      <div style="font-size:22px; font-weight:800;">${actionableCount} / ${lastOutputs.length}</div>
+      <div class="muted">Actionable / watchlist / total</div>
+      <div style="font-size:22px; font-weight:800;">${actionableCount} / ${lastWatchlist.length} / ${lastOutputs.length}</div>
       <div class="muted">Top N target: ${snap.top_n ?? '—'}</div>
     </div>
     <div class="card" style="margin:0;">
@@ -233,6 +244,15 @@ function renderActionable(){
   div.innerHTML = lastActionable.map(c => candidateCard(c, false)).join('');
 }
 
+function renderWatchlist(){
+  const div = document.getElementById('watchlist');
+  if (!lastWatchlist.length){
+    div.innerHTML = `<div class="muted" style="margin-top:10px;">No watchlist candidates in this snapshot.</div>`;
+    return;
+  }
+  div.innerHTML = lastWatchlist.map(c => candidateCard(c, true)).join('');
+}
+
 function renderPage(){
   const outDiv = document.getElementById('outputs');
   const total = lastOutputs.length;
@@ -277,21 +297,25 @@ async function loadSports(){
 async function loadSnapshot(snapshotId, quiet=false){
   const meta = document.getElementById('snapshotMeta');
   if (!quiet) meta.textContent = 'Loading latest saved snapshot…';
-  const [allResp, actionableResp] = await Promise.all([
+  const [allResp, actionableResp, watchlistResp] = await Promise.all([
     fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=all&limit=200`),
-    fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=actionable&limit=100`)
+    fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=actionable&limit=100`),
+    fetch(`/api/candidates/latest?snapshot_id=${encodeURIComponent(snapshotId)}&view=watchlist&limit=100`)
   ]);
   const all = await allResp.json();
   const actionable = await actionableResp.json();
+  const watchlist = await watchlistResp.json();
 
   currentSnapshot = all.snapshot || null;
   lastOutputs = all.candidates || [];
   lastActionable = actionable.candidates || [];
+  lastWatchlist = watchlist.candidates || [];
   page = 1;
   liveMode = false;
   renderMode();
   renderSummary();
   renderActionable();
+  renderWatchlist();
   renderPage();
 
   if (currentSnapshot){
@@ -341,12 +365,14 @@ async function fetchOdds(){
     top_n: (j.candidates_debug || []).length,
   };
   lastActionable = j.candidates_actionable || [];
+  lastWatchlist = j.candidates_watchlist || [];
   lastOutputs = j.candidates_debug || [];
   page = 1;
   liveMode = true;
   renderMode();
   renderSummary();
   renderActionable();
+  renderWatchlist();
   renderPage();
 
   meta.textContent = `Fetched live snapshot #${j.snapshot_id} • ${j.count} matches • remaining requests ${j.requests_remaining ?? 'n/a'} • updated ${fmtLocal(j.ts)}`;
@@ -485,6 +511,7 @@ function clearClv(){
 
 renderMode();
 renderSummary();
+renderWatchlist();
 loadSports();
 loadLatestSnapshot();
 loadActionables();

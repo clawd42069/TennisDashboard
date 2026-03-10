@@ -2,13 +2,76 @@
 {% block content %}
 <div class="card">
   <h2 style="margin:0 0 8px 0;">Strategies + Backtests</h2>
-  <div class="muted">This tab becomes real once historical Tennis Abstract data is imported and we can backtest.</div>
+  <div class="muted">This tab now includes a live strategy audit so we can see what the model is actually selecting before we trust it.</div>
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">Strategy list (placeholder)</h3>
+  <h3 style="margin-top:0;">Current selection audit</h3>
+  <div class="grid2" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="card" style="margin:0;">
+      <div class="muted">Recent actionable rows</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.latest_actionables.n or 0 }}</div>
+      <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Max odds {{ audit.latest_actionables.max_odds or '—' }}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Recent watchlist rows</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.latest_watchlist.n or 0 }}</div>
+      <div class="muted">Avg odds {{ audit.latest_watchlist.avg_odds or '—' }} • Avg conf {{ audit.latest_watchlist.avg_conf or '—' }}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Settled actionables</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.settled_actionables.settled_n or 0 }}</div>
+      <div class="muted">Win rate {% if audit.settled_actionables.win_rate is defined %}{{ '%.1f'|format(audit.settled_actionables.win_rate*100) }}%{% else %}—{% endif %}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Thresholds in force</h3>
+  <table>
+    <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for k, v in audit.thresholds.items() %}
+      <tr><td><strong>{{ k }}</strong></td><td class="muted">{{ v }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Recent actionable odds buckets</h3>
+  {% if audit.latest_actionables.odds_buckets %}
+  <table>
+    <thead><tr><th>Bucket</th><th>Count</th><th>Avg EV_adj</th><th>Avg conf</th></tr></thead>
+    <tbody>
+      {% for row in audit.latest_actionables.odds_buckets %}
+      <tr>
+        <td><strong>{{ row.bucket }}</strong></td>
+        <td class="muted">{{ row.n }}</td>
+        <td>{{ row.avg_ev_adj }}</td>
+        <td>{{ row.avg_conf }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="muted">No recent actionable rows to analyze yet.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Audit notes</h3>
+  <ul class="muted">
+    {% for note in audit.notes %}
+    <li>{{ note }}</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Strategy list</h3>
   {% if strategies|length == 0 %}
-    <div class="muted">No strategies stored yet. Next step: create rule cards (inputs → filters → bet type → sizing).</div>
+    <div class="muted">No strategies stored yet. Next step: turn the audit findings into explicit rule cards and threshold experiments.</div>
   {% else %}
     <table>
       <thead><tr><th>Name</th><th>Description</th><th>Created</th></tr></thead>
@@ -19,14 +82,5 @@
       </tbody>
     </table>
   {% endif %}
-</div>
-
-<div class="card">
-  <h3 style="margin-top:0;">Next build</h3>
-  <ul class="muted">
-    <li>Define 3-5 strategies as “rule cards”</li>
-    <li>Backtest on historical matches (surface + opponent-quality progression + style proxy metrics)</li>
-    <li>Track ROI, drawdown, hit-rate, CLV</li>
-  </ul>
 </div>
 {% endblock %}
