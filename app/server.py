@@ -34,6 +34,7 @@ def create_app():
 
     ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
     _bootstrap = {"running": False, "status": "idle", "last": None}
+    _settler = {"running": False, "last": None, "last_result": None}
 
     def _auth_ok():
         if not ADMIN_TOKEN:
@@ -366,6 +367,34 @@ def create_app():
 
         return {"updated": updated, "errors": errors}
 
+    def _background_settler_loop():
+        interval_sec = max(15, int(os.getenv("ACTIONABLES_SETTLER_INTERVAL_SEC") or 60))
+        while True:
+            try:
+                conn = connect()
+                open_row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM daily_actionables WHERE result = 'OPEN'"
+                ).fetchone()
+                open_n = int((open_row or {"n": 0})["n"])
+                if open_n > 0:
+                    settle = _settle_open_actionables(conn, days_from=1)
+                    conn.commit()
+                    _settler["last_result"] = {"open": open_n, **settle}
+                else:
+                    _settler["last_result"] = {"open": 0, "updated": 0, "errors": []}
+                _settler["last"] = utc_now_iso()
+                conn.close()
+            except Exception as e:
+                _settler["last"] = utc_now_iso()
+                _settler["last_result"] = {"error": str(e)}
+            finally:
+                import time
+                time.sleep(interval_sec)
+
+    if os.getenv("ACTIONABLES_SETTLER_ENABLED", "1") == "1" and not _settler["running"]:
+        threading.Thread(target=_background_settler_loop, daemon=True).start()
+        _settler["running"] = True
+
     @app.get("/admin/odds/sports")
     def admin_odds_sports():
         if not _auth_ok():
@@ -377,6 +406,12 @@ def create_app():
         # return tennis-related keys first to keep payload small
         tennis = [s for s in (sports or []) if str(s.get("key", "")).startswith("tennis")]
         return jsonify({"ok": True, "tennis": tennis, "count_tennis": len(tennis), "count_all": len(sports or [])})
+
+    @app.get("/admin/actionables/settler_status")
+    def admin_actionables_settler_status():
+        if not _auth_ok():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return jsonify({"ok": True, **_settler})
 
     @app.get("/admin/actionables/debug")
     def admin_actionables_debug():
