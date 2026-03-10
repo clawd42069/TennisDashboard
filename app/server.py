@@ -92,15 +92,11 @@ def create_app():
 
     app.jinja_env.filters["fmt_et"] = fmt_et
 
-    @app.get("/paper")
-    def paper():
-        """Tab E: paper trading tracker."""
-        conn = connect()
+    def _paper_state(conn):
         bets = conn.execute(
             "SELECT * FROM paper_bets ORDER BY id DESC LIMIT 200"
         ).fetchall()
 
-        # Build match_id -> label from latest odds snapshot so old rows display nicely
         latest = conn.execute("SELECT ts FROM odds_snapshots ORDER BY ts DESC LIMIT 1").fetchone()
         match_labels = {}
         if latest:
@@ -115,8 +111,6 @@ def create_app():
                 except Exception:
                     pass
 
-        conn.close()
-
         enriched = []
         for b in bets:
             d = dict(b)
@@ -124,18 +118,16 @@ def create_app():
                 d["match_label"] = match_labels.get(d.get("match_id"))
             enriched.append(d)
 
-        # Aggregate performance metrics
         total_bets = len(enriched)
         settled = [b for b in enriched if (b.get("result") in ("WIN", "LOSS", "PUSH"))]
         wins = [b for b in settled if b.get("result") == "WIN"]
         losses = [b for b in settled if b.get("result") == "LOSS"]
+        open_bets = [b for b in enriched if (b.get("result") or "OPEN") == "OPEN"]
 
         total_pnl = sum((b.get("pnl_dollars") or 0.0) for b in settled)
         total_units = sum((b.get("units") or 0.0) for b in enriched)
-
         win_rate = (len(wins) / (len(wins) + len(losses))) if (len(wins) + len(losses)) > 0 else None
 
-        # By bet type (market)
         by_type = {}
         for b in enriched:
             t = b.get("market") or ""
@@ -154,12 +146,20 @@ def create_app():
             "losses": len(losses),
             "settled": len(settled),
             "total_bets": total_bets,
+            "open_bets": len(open_bets),
             "win_rate": win_rate,
             "total_units": total_units,
             "by_type": by_type,
         }
+        return {"bets": enriched, "perf": perf}
 
-        return render_template("paper.html", bets=enriched, perf=perf)
+    @app.get("/paper")
+    def paper():
+        """Tab E: paper trading tracker."""
+        conn = connect()
+        state = _paper_state(conn)
+        conn.close()
+        return render_template("paper.html", bets=state["bets"], perf=state["perf"])
 
     def dec_to_american(dec: float | None):
         if not dec or dec <= 1:
@@ -390,6 +390,80 @@ def create_app():
 
         return {"updated": updated, "errors": errors}
 
+    def _settle_open_paper_bets(conn, days_from: int = 1):
+        """Settle OPEN paper bets when the final match winner is available.
+
+        Current auto-grading supports h2h bets only. Spreads/totals remain manual until
+        we add richer score parsing / line logic.
+        """
+        days_from = max(1, min(int(days_from or 1), 1))
+        sk_rows = conn.execute(
+            """
+            SELECT DISTINCT os.sport_key
+            FROM paper_bets pb
+            JOIN odds_snapshots os ON os.match_id = pb.match_id
+            WHERE COALESCE(pb.result, 'OPEN') = 'OPEN'
+              AND pb.match_id IS NOT NULL
+              AND os.sport_key IS NOT NULL
+            """
+        ).fetchall()
+        sport_keys = [r[0] for r in sk_rows]
+
+        updated = 0
+        errors = []
+        for sport_key in sport_keys:
+            score_key_candidates = [sport_key]
+            if sport_key.startswith("tennis_atp_"):
+                score_key_candidates.append("tennis_atp")
+            elif sport_key.startswith("tennis_wta_"):
+                score_key_candidates.append("tennis_wta")
+
+            events = None
+            last_error = None
+            for candidate_key in score_key_candidates:
+                try:
+                    events, _headers = get_scores(sport_key=candidate_key, days_from=days_from)
+                    break
+                except Exception as e:
+                    last_error = str(e)
+
+            if events is None:
+                errors.append({"sport_key": sport_key, "error": last_error})
+                continue
+
+            by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
+            rows = conn.execute(
+                """
+                SELECT DISTINCT pb.id, pb.match_id, pb.player, pb.market, pb.units, pb.odds_american
+                FROM paper_bets pb
+                JOIN odds_snapshots os ON os.match_id = pb.match_id
+                WHERE COALESCE(pb.result, 'OPEN') = 'OPEN'
+                  AND os.sport_key = ?
+                """,
+                (sport_key,),
+            ).fetchall()
+
+            for r in rows:
+                event = by_id.get(r["match_id"])
+                if not event or not event.get("completed"):
+                    continue
+                market = (r["market"] or "").lower()
+                if market != "h2h":
+                    continue
+                winner = _infer_winner_name(event)
+                if not winner:
+                    continue
+                result = "WIN" if winner == r["player"] else "LOSS"
+                pnl_units = pnl_units_for_result(result, float(r["units"] or 0.0), r["odds_american"])
+                pnl_dollars = units_to_dollars(pnl_units, 500.0)
+                conn.execute(
+                    "UPDATE paper_bets SET result = ?, pnl_units = ?, pnl_dollars = ?, settled_ts = ? WHERE id = ?",
+                    (result, pnl_units, pnl_dollars, utc_now_iso(), int(r["id"])),
+                )
+                updated += 1
+
+        return {"updated": updated, "errors": errors}
+
     def _background_settler_loop():
         interval_sec = max(300, int(os.getenv("ACTIONABLES_SETTLER_INTERVAL_SEC") or 300))
         while True:
@@ -399,12 +473,17 @@ def create_app():
                     "SELECT COUNT(*) AS n FROM daily_actionables WHERE result = 'OPEN'"
                 ).fetchone()
                 open_n = int((open_row or {"n": 0})["n"])
-                if open_n > 0:
-                    settle = _settle_open_actionables(conn, days_from=1)
+                paper_open_row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'"
+                ).fetchone()
+                paper_open_n = int((paper_open_row or {"n": 0})["n"])
+                if open_n > 0 or paper_open_n > 0:
+                    settle = _settle_open_actionables(conn, days_from=1) if open_n > 0 else {"updated": 0, "errors": []}
+                    paper_settle = _settle_open_paper_bets(conn, days_from=1) if paper_open_n > 0 else {"updated": 0, "errors": []}
                     conn.commit()
-                    _settler["last_result"] = {"open": open_n, **settle}
+                    _settler["last_result"] = {"open": open_n, "paper_open": paper_open_n, "actionables": settle, "paper": paper_settle}
                 else:
-                    _settler["last_result"] = {"open": 0, "updated": 0, "errors": []}
+                    _settler["last_result"] = {"open": 0, "paper_open": 0, "updated": 0, "errors": []}
                 _settler["last"] = utc_now_iso()
                 conn.close()
             except Exception as e:
@@ -481,6 +560,13 @@ def create_app():
         conn.close()
 
         return jsonify({"ok": True, "sport_keys": sport_keys, "checked": int((open_rows or {"n": 0})["n"]), "updated": settle["updated"], "errors": settle["errors"]})
+
+    @app.get("/api/paper/state")
+    def api_paper_state():
+        conn = connect()
+        state = _paper_state(conn)
+        conn.close()
+        return jsonify(state)
 
     @app.get("/api/paper_candidates")
     def api_paper_candidates():

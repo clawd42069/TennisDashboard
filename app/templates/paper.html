@@ -6,8 +6,11 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">Performance Summary</h3>
-  <div class="grid2" style="grid-template-columns: repeat(4, 1fr);">
+  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+    <h3 style="margin-top:0; margin-bottom:0;">Performance Summary</h3>
+    <div id="paperRefreshMeta" class="muted">{% if perf.open_bets > 0 %}Auto-refresh on while open bets exist.{% else %}No open bets pending.{% endif %}</div>
+  </div>
+  <div id="paperSummaryCards" class="grid2" style="grid-template-columns: repeat(4, 1fr);">
     <div class="card" style="margin:0;">
       <div class="muted">Total P/L</div>
       <div class="{% if perf.total_pnl > 0 %}win{% elif perf.total_pnl < 0 %}loss{% else %}neutral{% endif %}" style="font-size:22px; font-weight:800;">${{ '%.2f'|format(perf.total_pnl) }}</div>
@@ -22,7 +25,7 @@
     <div class="card" style="margin:0;">
       <div class="muted">Bets</div>
       <div class="neutral" style="font-size:22px; font-weight:800;">{{ perf.total_bets }}</div>
-      <div class="muted">Settled: {{ perf.settled }}</div>
+      <div class="muted">Settled: {{ perf.settled }} • Open: {{ perf.open_bets }}</div>
     </div>
     <div class="card" style="margin:0;">
       <div class="muted">Total units</div>
@@ -170,7 +173,7 @@ loadCandidates();
         <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Units</th><th>Result</th><th>P/L</th><th>Note</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="recentBetsBody">
       {% for b in bets %}
         <tr>
           <td class="muted">{{ b.ts|fmt_et }}</td>
@@ -197,4 +200,86 @@ loadCandidates();
     </tbody>
   </table>
 </div>
+
+<script>
+const PAPER_POLL_MS = 60000;
+let paperTimer = null;
+
+function fmtEt(iso){
+  if (!iso) return '';
+  const d = new Date(iso);
+  const opts = { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true, month: '2-digit', day: '2-digit', year: '2-digit' };
+  const parts = new Intl.DateTimeFormat('en-US', opts).formatToParts(d);
+  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return `${map.hour}:${map.minute}${(map.dayPeriod || '').toLowerCase()} ${map.month}/${map.day}/${map.year}`;
+}
+function money(v){ return v === null || v === undefined ? '—' : `$${Number(v).toFixed(2)}`; }
+function pct(v){ return v === null || v === undefined ? '—' : `${(Number(v)*100).toFixed(1)}%`; }
+
+function renderPaperSummary(perf){
+  document.getElementById('paperSummaryCards').innerHTML = `
+    <div class="card" style="margin:0;">
+      <div class="muted">Total P/L</div>
+      <div class="${perf.total_pnl > 0 ? 'win' : (perf.total_pnl < 0 ? 'loss' : 'neutral')}" style="font-size:22px; font-weight:800;">${money(perf.total_pnl)}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Win rate</div>
+      <div class="${perf.win_rate !== null && perf.win_rate >= 0.55 ? 'win' : (perf.win_rate !== null && perf.win_rate <= 0.45 ? 'loss' : 'warn')}" style="font-size:22px; font-weight:800;">
+        ${pct(perf.win_rate)} <span class="muted" style="font-weight:600;">(${perf.wins}/${perf.losses})</span>
+      </div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Bets</div>
+      <div class="neutral" style="font-size:22px; font-weight:800;">${perf.total_bets}</div>
+      <div class="muted">Settled: ${perf.settled} • Open: ${perf.open_bets}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Total units</div>
+      <div style="font-size:22px; font-weight:800;">${Number(perf.total_units || 0).toFixed(2)}</div>
+      <div class="muted">$500 / unit</div>
+    </div>`;
+  document.getElementById('paperRefreshMeta').textContent = perf.open_bets > 0 ? 'Auto-refresh on while open bets exist.' : 'No open bets pending.';
+}
+
+function renderRecentBets(bets){
+  document.getElementById('recentBetsBody').innerHTML = bets.map(b => {
+    const res = b.result || 'OPEN';
+    const cls = res === 'WIN' ? 'win' : (res === 'LOSS' ? 'loss' : '');
+    const pnl = b.pnl_dollars !== null && b.pnl_dollars !== undefined ? money(b.pnl_dollars) : (b.pnl_units !== null && b.pnl_units !== undefined ? Number(b.pnl_units).toFixed(2) : '');
+    return `<tr>
+      <td class="muted">${fmtEt(b.ts)}</td>
+      <td>${b.tournament || ''}</td>
+      <td class="muted">${b.match_label || b.match_id || ''}</td>
+      <td><strong>${b.player || ''}</strong></td>
+      <td class="muted">${b.market || ''}</td>
+      <td><strong>${b.odds_american || ''}</strong></td>
+      <td><strong>${b.units || ''}</strong></td>
+      <td class="muted ${cls}">${res}</td>
+      <td class="${cls}"><strong>${pnl}</strong></td>
+      <td class="muted">${b.note || ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshPaperState(){
+  if (paperTimer){
+    clearTimeout(paperTimer);
+    paperTimer = null;
+  }
+  const r = await fetch('/api/paper/state');
+  const j = await r.json();
+  renderPaperSummary(j.perf || {});
+  renderRecentBets(j.bets || []);
+  if ((j.perf || {}).open_bets > 0){
+    if (!paperTimer) paperTimer = setTimeout(refreshPaperState, PAPER_POLL_MS);
+  } else if (paperTimer) {
+    clearTimeout(paperTimer);
+    paperTimer = null;
+  }
+}
+
+if ({{ perf.open_bets|default(0) }} > 0){
+  paperTimer = setTimeout(refreshPaperState, PAPER_POLL_MS);
+}
+</script>
 {% endblock %}
