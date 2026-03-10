@@ -106,7 +106,7 @@ let lastActionable = [];
 let lastWatchlist = [];
 let page = 1;
 const pageSize = 8;
-const ACTIONABLES_POLL_MS = 15000;
+const ACTIONABLES_POLL_MS = 60000;
 let currentSnapshot = null;
 let liveMode = false;
 
@@ -157,7 +157,7 @@ function renderSummary(){
   const wrap = document.getElementById('summaryCards');
   const snap = currentSnapshot || {};
   const actionableCount = lastActionable.length;
-  const best = lastOutputs[0] || null;
+  const best = lastActionable[0] || lastWatchlist[0] || lastOutputs[0] || null;
   wrap.innerHTML = `
     <div class="card" style="margin:0;">
       <div class="muted">Snapshot</div>
@@ -175,7 +175,7 @@ function renderSummary(){
       <div class="muted">Top N target: ${snap.top_n ?? '—'}</div>
     </div>
     <div class="card" style="margin:0;">
-      <div class="muted">Best candidate</div>
+      <div class="muted">Best actionable</div>
       <div style="font-size:18px; font-weight:800;">${best ? best.side : '—'}</div>
       <div class="muted">EV_adj ${best ? signed(best.ev_adj) : '—'} • Conf ${best ? pct(best.confidence,0) : '—'}</div>
     </div>

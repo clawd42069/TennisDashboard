@@ -370,7 +370,7 @@ def create_app():
         return {"updated": updated, "errors": errors}
 
     def _background_settler_loop():
-        interval_sec = max(15, int(os.getenv("ACTIONABLES_SETTLER_INTERVAL_SEC") or 60))
+        interval_sec = max(300, int(os.getenv("ACTIONABLES_SETTLER_INTERVAL_SEC") or 300))
         while True:
             try:
                 conn = connect()
