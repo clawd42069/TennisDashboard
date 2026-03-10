@@ -900,6 +900,14 @@ def create_app():
             "heavy_favorite_min_ev_adj": float(os.getenv("HEAVY_FAVORITE_MIN_EV_ADJ") or 0.055),
             "tie_ev_band": float(os.getenv("SELECTION_TIE_EV_BAND") or 0.015),
             "tie_conf_band": float(os.getenv("SELECTION_TIE_CONF_BAND") or 0.04),
+            "tier_a_ev_adj": float(os.getenv("TIER_A_MIN_EV_ADJ") or 0.09),
+            "tier_a_conf": float(os.getenv("TIER_A_MIN_CONF") or 0.74),
+            "tier_b_ev_adj": float(os.getenv("TIER_B_MIN_EV_ADJ") or 0.06),
+            "tier_b_conf": float(os.getenv("TIER_B_MIN_CONF") or 0.70),
+            "tier_c_ev_adj": float(os.getenv("TIER_C_MIN_EV_ADJ") or 0.04),
+            "tier_c_conf": float(os.getenv("TIER_C_MIN_CONF") or 0.66),
+            "tier_d_ev_adj": float(os.getenv("TIER_D_MIN_EV_ADJ") or 0.03),
+            "tier_d_conf": float(os.getenv("TIER_D_MIN_CONF") or 0.64),
         }
 
     def _is_heavy_favorite_ml(c, thresholds: dict) -> bool:
@@ -917,6 +925,81 @@ def create_app():
         ev_bucket = round(ev_adj / max(thresholds["tie_ev_band"], 0.001))
         conf_bucket = round(conf / max(thresholds["tie_conf_band"], 0.01))
         return (-ev_bucket, -conf_bucket, heavy_fav, price, -ev_adj, -conf)
+
+    def _assign_tier_and_units(c, view_mode: str, thresholds: dict) -> tuple[str, float | None]:
+        conf = float(getattr(c, "confidence", 0.0) or 0.0)
+        ev_adj = float(getattr(c, "ev_adj", 0.0) or 0.0)
+        if view_mode != "actionable":
+            return ("Watchlist", None) if view_mode == "watchlist" else ("Debug", None)
+        if conf >= thresholds["tier_a_conf"] and ev_adj >= thresholds["tier_a_ev_adj"]:
+            return "Tier A", 4.0
+        if conf >= thresholds["tier_b_conf"] and ev_adj >= thresholds["tier_b_ev_adj"]:
+            return "Tier B", 3.0
+        if conf >= thresholds["tier_c_conf"] and ev_adj >= thresholds["tier_c_ev_adj"]:
+            return "Tier C", 2.0
+        return "Tier D", 1.0
+
+    def _best_alternative_market(match_payload: dict, side: str):
+        best = None
+        best_score = None
+        for bm in (match_payload.get("bookmakers") or []):
+            for market in (bm.get("markets") or []):
+                key = market.get("key")
+                if key not in ("spreads", "totals"):
+                    continue
+                for o in (market.get("outcomes") or []):
+                    if key == "spreads" and o.get("name") != side:
+                        continue
+                    price = o.get("price")
+                    if not price:
+                        continue
+                    american = dec_to_american(price)
+                    score = abs((american or 0) - 100)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best = {
+                            "market": key,
+                            "name": o.get("name"),
+                            "line": o.get("point"),
+                            "price_decimal": price,
+                            "price_american": american,
+                            "book": bm.get("title"),
+                        }
+        return best
+
+    def _build_strategy_reasoning(c, view_mode: str, thresholds: dict, alt_market=None):
+        price_am = dec_to_american(getattr(c, "price_decimal", None))
+        tier, units = _assign_tier_and_units(c, view_mode, thresholds)
+        model_edge = ((getattr(c, "p_final", 0.0) or 0.0) - (getattr(c, "q_implied", 0.0) or 0.0))
+        summary = f"Model makes {c.side} about {((c.p_final or 0)*100):.1f}% vs market {((c.q_implied or 0)*100):.1f}% at {price_am if price_am is not None else '—'} — estimated edge {model_edge*100:+.1f} pts."
+        why = []
+        risk = []
+        if view_mode == "actionable":
+            why.append(f"{tier} actionable — suggested size {units:.1f}u based on EV_adj {c.ev_adj:+.3f} and confidence {(c.confidence or 0)*100:.0f}%.")
+        elif view_mode == "watchlist":
+            why.append("Watchlist only — interesting edge, but not clean enough for true actionable status yet.")
+        else:
+            why.append("Debug only — outside current strategy thresholds.")
+        if _is_heavy_favorite_ml(c, thresholds):
+            risk.append("Heavy-favorite ML tax — expensive moneyline needs stronger justification than a normal ML.")
+            if alt_market:
+                why.append(f"Alternative market to consider: {alt_market['market'].upper()} {alt_market.get('line')} on {alt_market.get('name')} at {alt_market.get('price_american')} ({alt_market.get('book')}).")
+            else:
+                why.append("Alternative market check: prefer same-player spread / alt line if available instead of laying a heavy ML.")
+        elif (c.price_decimal or 99) >= 3.5:
+            risk.append("Dog/longer price — edge is more fragile and should be sized carefully.")
+        if (c.confidence or 0) < 0.70:
+            risk.append("Confidence is decent but not elite — do not treat this like a top-tier play.")
+        if abs(model_edge) >= thresholds["actionable_max_edge"] * 0.8:
+            risk.append("Model is disagreeing with market materially — upside is real, but calibration risk is higher.")
+        return {
+            "tier": tier,
+            "units": units,
+            "summary": summary,
+            "why": why,
+            "risk": risk,
+            "alternative_market": alt_market,
+        }
 
     def _classify_candidate(c, thresholds: dict) -> tuple[str, bool]:
         if c.price_decimal is None or c.ev is None or c.ev_adj is None or c.q_implied is None or c.p_final is None:
@@ -1059,8 +1142,14 @@ def create_app():
         else:
             summary["notes"].append("Not enough settled actionables yet for a real threshold backtest.")
 
+        summary["strategy_framework"] = [
+            {"market": "ML", "status": "active", "notes": "Primary live strategy. Tiered units, heavy-favorite guardrails, watchlist split, price-aware ranking are active."},
+            {"market": "spreads", "status": "next", "notes": "Needed for heavy-favorite substitution and better favorite expression; selection/grading rules still need dedicated modeling."},
+            {"market": "totals", "status": "next", "notes": "Should get separate thresholds and grading rules; not reliable enough to surface as true strategy output yet."},
+        ]
         summary["notes"].append("Audit applies the current selection thresholds to the most recent 50 snapshots, even if those snapshots were generated before the new rules shipped.")
         summary["notes"].append("Current actionable design favors lower-variance selections; high-EV fragile dogs are demoted to watchlist.")
+        summary["notes"].append("Tier sizing is now built in: stronger EV_adj/confidence combinations map to larger suggested units, while watchlist/debug carry no suggested size.")
         return summary
 
     def player_id_from_name(conn, name: str | None):
@@ -1150,6 +1239,8 @@ def create_app():
 
         thresholds = _selection_thresholds()
 
+        odds_by_match = {normalize_match(m): m for m in odds}
+
         for c in candidates:
             if _is_heavy_favorite_ml(c, thresholds):
                 c.reasons.append("Heavy-favorite ML: prefer same-player spread / alt market when available; downgrade plain ML unless edge is exceptional.")
@@ -1161,6 +1252,14 @@ def create_app():
         classified = []
         for c in candidates:
             view_mode, is_actionable = _classify_candidate(c, thresholds)
+            alt_market = _best_alternative_market(odds_by_match.get(c.match_id) or {}, c.side) if _is_heavy_favorite_ml(c, thresholds) else None
+            strategy_meta = _build_strategy_reasoning(c, "actionable" if is_actionable else view_mode, thresholds, alt_market=alt_market)
+            c.selection_tier = strategy_meta["tier"]
+            c.units_suggested = strategy_meta["units"]
+            c.strategy_summary = strategy_meta["summary"]
+            c.strategy_why = strategy_meta["why"]
+            c.strategy_risk = strategy_meta["risk"]
+            c.alternative_market = strategy_meta["alternative_market"]
             classified.append((c, view_mode, is_actionable))
             if is_actionable:
                 actionable.append(c)
@@ -1188,6 +1287,12 @@ def create_app():
                 "confidence": c.confidence,
                 "ev_adj": c.ev_adj,
                 "reasons": c.reasons,
+                "selection_tier": getattr(c, "selection_tier", None),
+                "units_suggested": getattr(c, "units_suggested", None),
+                "strategy_summary": getattr(c, "strategy_summary", None),
+                "strategy_why": getattr(c, "strategy_why", []),
+                "strategy_risk": getattr(c, "strategy_risk", []),
+                "alternative_market": getattr(c, "alternative_market", None),
             }
 
         # persist candidates
@@ -1234,7 +1339,7 @@ def create_app():
                     None,
                     view_mode,
                     1 if is_actionable else 0,
-                    None,
+                    getattr(c, "units_suggested", None),
                 ),
             )
 

@@ -260,6 +260,7 @@ function candidateCard(c, compact=false, section='debug'){
       </div>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${c.selection_tier ? pill(`Tier <strong>${c.selection_tier}</strong>`) : ''}
         ${pill(`Price <strong>${americanOddsText(c.price_american || decToAmerican(c.price_decimal))}</strong>`)}
         ${pill(`p0 <strong>${num(c.p0)}</strong>`)}
         ${pill(`p <strong>${num(c.p_final)}</strong>`)}
@@ -269,6 +270,11 @@ function candidateCard(c, compact=false, section='debug'){
         ${pill(`EV_adj <strong>${signed(c.ev_adj)}</strong>`)}
         ${c.units_suggested ? pill(`Units <strong>${c.units_suggested}</strong>`) : ''}
       </div>
+
+      ${c.strategy_summary ? `<div style="margin-top:10px;"><strong>${c.strategy_summary}</strong></div>` : ''}
+      ${(c.strategy_why || []).length ? `<ul class="muted" style="margin:8px 0 0 18px;">${c.strategy_why.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+      ${(c.strategy_risk || []).length ? `<div class="muted" style="margin-top:8px;"><strong>Main risks:</strong> ${(c.strategy_risk || []).join(' • ')}</div>` : ''}
+      ${c.alternative_market ? `<div class="muted" style="margin-top:8px;"><strong>Alt market:</strong> ${String(c.alternative_market.market || '').toUpperCase()} ${c.alternative_market.line ?? ''} at ${americanOddsText(c.alternative_market.price_american)} (${c.alternative_market.book || 'book n/a'})</div>` : ''}
 
       <details style="margin-top:10px;">
         <summary style="cursor:pointer;">Why the model likes it</summary>

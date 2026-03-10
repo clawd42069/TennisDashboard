@@ -27,6 +27,18 @@
 </div>
 
 <div class="card">
+  <h3 style="margin-top:0;">Strategy framework</h3>
+  <table>
+    <thead><tr><th>Market</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      {% for row in audit.strategy_framework %}
+      <tr><td><strong>{{ row.market }}</strong></td><td>{{ row.status }}</td><td class="muted">{{ row.notes }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
   <h3 style="margin-top:0;">Thresholds in force</h3>
   <table>
     <thead><tr><th>Rule</th><th>Value</th></tr></thead>
