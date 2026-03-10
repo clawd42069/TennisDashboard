@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
@@ -35,7 +35,7 @@ def create_app():
 
     ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
     _bootstrap = {"running": False, "status": "idle", "last": None}
-    _settler = {"running": False, "last": None, "last_result": None}
+    _settler = {"running": False, "last": None, "last_result": None, "last_on_demand": None}
 
     def _auth_ok():
         if not ADMIN_TOKEN:
@@ -390,6 +390,16 @@ def create_app():
 
         return {"updated": updated, "errors": errors}
 
+    def _should_run_on_demand_settle(min_interval_sec: int = 60) -> bool:
+        last = _settler.get("last_on_demand")
+        if not last:
+            return True
+        try:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            return datetime.now(timezone.utc) - dt >= timedelta(seconds=min_interval_sec)
+        except Exception:
+            return True
+
     def _settle_open_paper_bets(conn, days_from: int = 1):
         """Settle OPEN paper bets when the final match winner is available.
 
@@ -564,8 +574,19 @@ def create_app():
     @app.get("/api/paper/state")
     def api_paper_state():
         conn = connect()
+        open_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'"
+        ).fetchone()
+        open_n = int((open_row or {"n": 0})["n"])
+        settle_info = None
+        if open_n > 0 and _should_run_on_demand_settle(60):
+            settle_info = _settle_open_paper_bets(conn, days_from=1)
+            conn.commit()
+            _settler["last_on_demand"] = utc_now_iso()
         state = _paper_state(conn)
         conn.close()
+        if settle_info is not None:
+            state["settle"] = settle_info
         return jsonify(state)
 
     @app.get("/api/paper_candidates")
