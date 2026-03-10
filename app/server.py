@@ -1162,10 +1162,11 @@ def create_app():
             "actionable_min_ev": float(os.getenv("ACTIONABLE_MIN_EV") or 0.03),
             "actionable_min_ev_adj": float(os.getenv("ACTIONABLE_MIN_EV_ADJ") or 0.03),
             "actionable_max_edge": float(os.getenv("ACTIONABLE_MAX_EDGE") or 0.10),
-            "watchlist_max_odds": float(os.getenv("WATCHLIST_MAX_ODDS_DEC") or 12.0),
-            "watchlist_min_conf": float(os.getenv("WATCHLIST_MIN_CONF") or 0.58),
-            "watchlist_min_ev": float(os.getenv("WATCHLIST_MIN_EV") or 0.015),
-            "watchlist_min_ev_adj": float(os.getenv("WATCHLIST_MIN_EV_ADJ") or 0.015),
+            "watchlist_max_odds": float(os.getenv("WATCHLIST_MAX_ODDS_DEC") or 6.0),
+            "watchlist_min_conf": float(os.getenv("WATCHLIST_MIN_CONF") or 0.60),
+            "watchlist_min_ev": float(os.getenv("WATCHLIST_MIN_EV") or 0.02),
+            "watchlist_min_ev_adj": float(os.getenv("WATCHLIST_MIN_EV_ADJ") or 0.02),
+            "watchlist_max_edge": float(os.getenv("WATCHLIST_MAX_EDGE") or 0.10),
             "heavy_favorite_max_price": float(os.getenv("HEAVY_FAVORITE_MAX_PRICE_DEC") or 1.20),
             "heavy_favorite_min_conf": float(os.getenv("HEAVY_FAVORITE_MIN_CONF") or 0.74),
             "heavy_favorite_min_ev": float(os.getenv("HEAVY_FAVORITE_MIN_EV") or 0.08),
@@ -1260,6 +1261,8 @@ def create_app():
                 why.append("Alternative market check: prefer same-player spread / alt line if available instead of laying a heavy ML.")
         elif (c.price_decimal or 99) >= 3.5:
             risk.append("Dog/longer price — edge is more fragile and should be sized carefully.")
+        if (c.price_decimal or 99) > thresholds["watchlist_max_odds"]:
+            risk.append("Longshot filter — current strategy no longer wants very high-priced dogs on the watchlist.")
         if (c.confidence or 0) < 0.70:
             risk.append("Confidence is decent but not elite — do not treat this like a top-tier play.")
         if abs(model_edge) >= thresholds["actionable_max_edge"] * 0.8:
@@ -1303,6 +1306,7 @@ def create_app():
             and (c.confidence or 0.0) >= thresholds["watchlist_min_conf"]
             and c.ev >= thresholds["watchlist_min_ev"]
             and c.ev_adj >= thresholds["watchlist_min_ev_adj"]
+            and model_edge <= thresholds["watchlist_max_edge"]
         )
         if watchlist:
             return "watchlist", False
