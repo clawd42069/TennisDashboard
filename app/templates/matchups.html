@@ -343,6 +343,8 @@ function openBetModal(candidateJson){
   document.getElementById('betNote').value = `From Matchup Report${c.ev_adj !== undefined && c.ev_adj !== null ? ` • EV_adj ${signed(c.ev_adj)}` : ''}`;
   document.getElementById('betModalForm').dataset.candidateId = c.id || '';
   document.getElementById('betModalForm').dataset.matchId = c.match_id || '';
+  document.getElementById('betModalForm').dataset.commenceTime = c.commence_time || '';
+  document.getElementById('betModalForm').dataset.startDateEt = currentEtDate || currentSelectedDate();
   document.getElementById('betModalStatus').textContent = '';
 }
 
@@ -360,6 +362,8 @@ document.getElementById('betModalForm').addEventListener('submit', async (e) => 
   const payload = {
     source_candidate_id: form.dataset.candidateId || null,
     match_id: form.dataset.matchId || null,
+    commence_time: form.dataset.commenceTime || null,
+    start_date_et: form.dataset.startDateEt || null,
     match_label: document.getElementById('betMatchLabel').value,
     tournament: document.getElementById('betTournament').value,
     player: document.getElementById('betPlayer').value,

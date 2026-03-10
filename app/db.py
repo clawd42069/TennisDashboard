@@ -359,7 +359,9 @@ def migrate():
           pnl_units REAL,        -- profit/loss in units
           pnl_dollars REAL,      -- profit/loss in dollars
           settled_ts TEXT,
-          source_candidate_id INTEGER
+          source_candidate_id INTEGER,
+          commence_time TEXT,
+          start_date_et TEXT
         );
         """
     )
@@ -371,6 +373,8 @@ def migrate():
         "ALTER TABLE paper_bets ADD COLUMN pnl_units REAL;",
         "ALTER TABLE paper_bets ADD COLUMN pnl_dollars REAL;",
         "ALTER TABLE paper_bets ADD COLUMN source_candidate_id INTEGER;",
+        "ALTER TABLE paper_bets ADD COLUMN commence_time TEXT;",
+        "ALTER TABLE paper_bets ADD COLUMN start_date_et TEXT;",
     ]:
         try:
             cur.execute(stmt)

@@ -93,7 +93,33 @@ def create_app():
 
     app.jinja_env.filters["fmt_et"] = fmt_et
 
+    def _backfill_paper_start_fields(conn):
+        rows = conn.execute(
+            "SELECT id, match_id, commence_time, start_date_et FROM paper_bets WHERE commence_time IS NULL OR start_date_et IS NULL"
+        ).fetchall()
+        for row in rows:
+            commence_time = row["commence_time"]
+            start_date_et = row["start_date_et"]
+            if row["match_id"] and (not commence_time or not start_date_et):
+                snap = conn.execute(
+                    "SELECT payload_json FROM odds_snapshots WHERE match_id = ? ORDER BY id DESC LIMIT 1",
+                    (row["match_id"],),
+                ).fetchone()
+                if snap:
+                    try:
+                        payload = json.loads(snap["payload_json"] or '{}')
+                        commence_time = commence_time or payload.get("commence_time")
+                    except Exception:
+                        pass
+            start_date_et = start_date_et or _et_date_from_iso(commence_time)
+            conn.execute(
+                "UPDATE paper_bets SET commence_time = COALESCE(commence_time, ?), start_date_et = COALESCE(start_date_et, ?) WHERE id = ?",
+                (commence_time, start_date_et, int(row["id"])),
+            )
+
     def _paper_state(conn):
+        _backfill_paper_start_fields(conn)
+        conn.commit()
         bets = conn.execute(
             "SELECT * FROM paper_bets ORDER BY id DESC LIMIT 200"
         ).fetchall()
@@ -194,6 +220,8 @@ def create_app():
     def _insert_paper_bet(conn, payload: dict):
         odds_dec = payload.get("odds_decimal")
         odds_dec_f = float(odds_dec) if odds_dec not in (None, "") else None
+        commence_time = payload.get("commence_time") or None
+        start_date_et = payload.get("start_date_et") or _et_date_from_iso(commence_time)
         odds_am = payload.get("odds_american")
         odds_am_i = int(odds_am) if odds_am not in (None, "") else None
         if odds_am_i is None and odds_dec_f is not None:
@@ -207,8 +235,8 @@ def create_app():
 
         cur = conn.execute(
             """
-            INSERT INTO paper_bets (ts, match_id, match_label, tournament, player, market, odds_decimal, odds_american, units, note, result, pnl_units, pnl_dollars, settled_ts, source_candidate_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO paper_bets (ts, match_id, match_label, tournament, player, market, odds_decimal, odds_american, units, note, result, pnl_units, pnl_dollars, settled_ts, source_candidate_id, commence_time, start_date_et)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -226,6 +254,8 @@ def create_app():
                 pnl_dollars,
                 ts if result in ("WIN", "LOSS", "PUSH") else None,
                 payload.get("source_candidate_id") or None,
+                commence_time,
+                start_date_et,
             ),
         )
         row_id = cur.lastrowid
