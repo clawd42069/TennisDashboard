@@ -41,7 +41,7 @@
     <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
       <div>
         <h3 style="margin:0;">Daily actionables</h3>
-        <div class="muted">Auto-refreshes to reflect OPEN vs CLOSED/graded status.</div>
+        <div class="muted">Today’s actionable results for the ET-day slate.</div>
       </div>
       <button onclick="loadActionables()">Refresh</button>
     </div>
@@ -53,10 +53,10 @@
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
     <div>
-      <h3 style="margin:0;">Actionable shortlist</h3>
-      <div class="muted">Highest-conviction candidates only.</div>
+      <h3 style="margin:0;">Actionable Bets</h3>
+      <div class="muted">Best bets for the current ET-day slate under the current strategy.</div>
     </div>
-    <div class="muted">Sorted by EV_adj</div>
+    <div id="actionableHeaderMeta" class="muted"></div>
   </div>
   <div id="actionable"></div>
 </div>
@@ -64,27 +64,12 @@
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
     <div>
-      <h3 style="margin:0;">Watchlist</h3>
-      <div class="muted">Interesting edges that are too fragile for true actionable status.</div>
+      <h3 style="margin:0;">Top 10 Watchlist</h3>
+      <div class="muted">Next-best 10 bets for the ET-day slate if they don’t qualify as true actionables.</div>
     </div>
+    <div id="watchlistHeaderMeta" class="muted"></div>
   </div>
   <div id="watchlist"></div>
-</div>
-
-<div class="card">
-  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
-    <div>
-      <h3 style="margin:0;">Debug / review queue</h3>
-      <div class="muted">Inspect the broader shortlist behind the actionable cut.</div>
-    </div>
-    <div class="pager">
-      <button onclick="prevPage()">Prev</button>
-      <div class="muted">Page <span id="pageNum">1</span></div>
-      <button onclick="nextPage()">Next</button>
-      <div class="muted">Showing <span id="showingCount">0</span> / <span id="totalCount">0</span></div>
-    </div>
-  </div>
-  <div id="outputs"></div>
 </div>
 
 <div class="card" id="clvCard" style="display:none;">
@@ -251,14 +236,18 @@ function candidateCard(c, compact=false, section='debug'){
     ['Start', fmtLocal(c.commence_time)]
   ].map(([k,v]) => `<div><span class="muted">${k}:</span> <strong>${v}</strong></div>`).join('');
 
+  const stage = stageInfo(c);
   return `
-    <div class="card ${compact ? '' : 'live'}" style="margin-top:12px;">
+    <div class="card ${compact ? '' : 'live'}" style="margin-top:12px; border-left:4px solid ${stage.label === 'PRE' ? '#64748b' : (stage.label === 'LIVE' ? '#f59e0b' : '#10b981')};">
       <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
         <div>
           <div style="font-size:18px; font-weight:800;">${c.side}</div>
           <div class="muted">${c.player_a} vs ${c.player_b} • ${c.market_type}${c.line !== null && c.line !== undefined ? ` • line ${c.line}` : ''}</div>
         </div>
-        <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          ${pill(`<strong>${stage.label}</strong>`)}
+          <div class="muted">${fmtLocal(c.commence_time)} • ${c.surface || ''} • ${c.book || ''}</div>
+        </div>
       </div>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
@@ -296,10 +285,22 @@ function candidateCard(c, compact=false, section='debug'){
   `;
 }
 
+function stageInfo(c){
+  const now = Date.now();
+  const start = c.commence_time ? Date.parse(c.commence_time) : null;
+  if (!start) return { label: 'PRE', cls: 'neutral' };
+  if (now < start) return { label: 'PRE', cls: 'neutral' };
+  if (now < start + (180 * 60 * 1000)) return { label: 'LIVE', cls: 'warn' };
+  return { label: 'SETTLED', cls: 'win' };
+}
+
 function renderActionable(){
   const div = document.getElementById('actionable');
+  const meta = document.getElementById('actionableHeaderMeta');
+  const a = (currentSlateSummary || {}).actionables || {};
+  meta.textContent = `${lastActionable.length} bets • win rate ${a.win_rate !== null && a.win_rate !== undefined ? (a.win_rate*100).toFixed(1)+'%' : '—'}`;
   if (!lastActionable.length){
-    div.innerHTML = `<div class="muted" style="margin-top:10px;">No actionable candidates in this snapshot.</div>`;
+    div.innerHTML = `<div class="muted" style="margin-top:10px;">No actionable bets on this ET-day slate.</div>`;
     return;
   }
   div.innerHTML = lastActionable.map(c => candidateCard(c, false, 'actionable')).join('');
@@ -307,11 +308,14 @@ function renderActionable(){
 
 function renderWatchlist(){
   const div = document.getElementById('watchlist');
+  const meta = document.getElementById('watchlistHeaderMeta');
+  const w = (currentSlateSummary || {}).watchlist || {};
+  meta.textContent = `${lastWatchlist.length} bets • tracked win rate ${w.win_rate !== null && w.win_rate !== undefined ? (w.win_rate*100).toFixed(1)+'%' : '—'}`;
   if (!lastWatchlist.length){
-    div.innerHTML = `<div class="muted" style="margin-top:10px;">No watchlist candidates in this snapshot.</div>`;
+    div.innerHTML = `<div class="muted" style="margin-top:10px;">No watchlist bets on this ET-day slate.</div>`;
     return;
   }
-  div.innerHTML = lastWatchlist.map(c => candidateCard(c, true, 'watchlist')).join('');
+  div.innerHTML = lastWatchlist.slice(0,10).map(c => candidateCard(c, true, 'watchlist')).join('');
 }
 
 function openBetModal(candidateJson){
@@ -369,28 +373,9 @@ document.getElementById('betModalForm').addEventListener('submit', async (e) => 
   status.innerHTML = `Saved. <a href="/paper">Open Bet Tracker</a> to see it in Recent bets.`;
 });
 
-function renderPage(){
-  const outDiv = document.getElementById('outputs');
-  const total = lastOutputs.length;
-  document.getElementById('totalCount').textContent = total;
-  const maxPage = Math.max(1, Math.ceil(total / pageSize));
-  page = Math.min(Math.max(1, page), maxPage);
-  document.getElementById('pageNum').textContent = page;
-
-  const start = (page - 1) * pageSize;
-  const slice = lastOutputs.slice(start, start + pageSize);
-  document.getElementById('showingCount').textContent = slice.length;
-
-  if (!slice.length){
-    outDiv.innerHTML = `<div class="muted" style="margin-top:10px;">No candidates loaded yet.</div>`;
-    return;
-  }
-
-  outDiv.innerHTML = slice.map(c => candidateCard(c, true)).join('');
-}
-
-function nextPage(){ page += 1; renderPage(); }
-function prevPage(){ page -= 1; renderPage(); }
+function renderPage(){ return; }
+function nextPage(){ return; }
+function prevPage(){ return; }
 
 async function loadSports(){
   const el = document.getElementById('sportsMeta');

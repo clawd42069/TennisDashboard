@@ -285,6 +285,38 @@ def migrate():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_actionables_date ON daily_actionables(date_et);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_actionables_match ON daily_actionables(match_id);")
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_watchlist (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date_et TEXT NOT NULL,
+          created_ts TEXT NOT NULL,
+          snapshot_id INTEGER,
+          candidate_id INTEGER,
+          sport_key TEXT,
+          match_id TEXT,
+          commence_time TEXT,
+          player_a TEXT,
+          player_b TEXT,
+          market_type TEXT NOT NULL,
+          side TEXT NOT NULL,
+          line REAL,
+          book TEXT,
+          price_decimal REAL,
+          price_american INTEGER,
+          confidence REAL,
+          ev REAL,
+          ev_adj REAL,
+          result TEXT,
+          settled_ts TEXT,
+          score_json TEXT,
+          UNIQUE(date_et, candidate_id)
+        );
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_date ON daily_watchlist(date_et);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_match ON daily_watchlist(match_id);")
+
     # ---------------- Paper bets (existing) ----------------
     cur.execute(
         """

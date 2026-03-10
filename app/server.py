@@ -350,16 +350,11 @@ def create_app():
         except Exception:
             return None
 
-    def _settle_open_actionables(conn, date_et: str | None = None, days_from: int = 1):
-        """Try to settle OPEN daily actionables using the Odds API scores endpoint.
-
-        Notes:
-        - Tennis scores only support a short lookback; default to 1 day.
-        - We keep failures soft so the UI can still render.
-        """
+    def _settle_open_daily_rows(conn, table_name: str, date_et: str | None = None, days_from: int = 1):
+        """Settle OPEN daily rows (actionables/watchlist) from score feed."""
         days_from = max(1, min(int(days_from or 1), 1))
 
-        sql = "SELECT DISTINCT sport_key FROM daily_actionables WHERE result = 'OPEN' AND sport_key IS NOT NULL"
+        sql = f"SELECT DISTINCT sport_key FROM {table_name} WHERE result = 'OPEN' AND sport_key IS NOT NULL"
         params = []
         if date_et:
             sql += " AND date_et = ?"
@@ -390,7 +385,7 @@ def create_app():
                 continue
 
             by_id = {e.get("id"): e for e in (events or []) if e.get("id")}
-            row_sql = "SELECT id, match_id, side FROM daily_actionables WHERE result = 'OPEN' AND sport_key = ?"
+            row_sql = f"SELECT id, match_id, side FROM {table_name} WHERE result = 'OPEN' AND sport_key = ?"
             row_params = [sport_key]
             if date_et:
                 row_sql += " AND date_et = ?"
@@ -399,25 +394,29 @@ def create_app():
 
             for r in rows:
                 event = by_id.get(r["match_id"])
-                if not event:
-                    continue
-                if not event.get("completed"):
+                if not event or not event.get("completed"):
                     continue
                 winner = _infer_winner_name(event)
                 if not winner:
                     conn.execute(
-                        "UPDATE daily_actionables SET score_json = ? WHERE id = ?",
+                        f"UPDATE {table_name} SET score_json = ? WHERE id = ?",
                         (json.dumps(event), int(r["id"])),
                     )
                     continue
                 result = "WIN" if winner == r["side"] else "LOSS"
                 conn.execute(
-                    "UPDATE daily_actionables SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
+                    f"UPDATE {table_name} SET result = ?, settled_ts = ?, score_json = ? WHERE id = ?",
                     (result, utc_now_iso(), json.dumps(event), int(r["id"])),
                 )
                 updated += 1
 
         return {"updated": updated, "errors": errors}
+
+    def _settle_open_actionables(conn, date_et: str | None = None, days_from: int = 1):
+        return _settle_open_daily_rows(conn, "daily_actionables", date_et=date_et, days_from=days_from)
+
+    def _settle_open_watchlist(conn, date_et: str | None = None, days_from: int = 1):
+        return _settle_open_daily_rows(conn, "daily_watchlist", date_et=date_et, days_from=days_from)
 
     def _should_run_on_demand_settle(min_interval_sec: int = 60) -> bool:
         last = _settler.get("last_on_demand")
@@ -516,13 +515,18 @@ def create_app():
                     "SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'"
                 ).fetchone()
                 paper_open_n = int((paper_open_row or {"n": 0})["n"])
-                if open_n > 0 or paper_open_n > 0:
+                watchlist_open_row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM daily_watchlist WHERE result = 'OPEN'"
+                ).fetchone()
+                watchlist_open_n = int((watchlist_open_row or {"n": 0})["n"])
+                if open_n > 0 or watchlist_open_n > 0 or paper_open_n > 0:
                     settle = _settle_open_actionables(conn, days_from=1) if open_n > 0 else {"updated": 0, "errors": []}
+                    watchlist_settle = _settle_open_watchlist(conn, days_from=1) if watchlist_open_n > 0 else {"updated": 0, "errors": []}
                     paper_settle = _settle_open_paper_bets(conn, days_from=1) if paper_open_n > 0 else {"updated": 0, "errors": []}
                     conn.commit()
-                    _settler["last_result"] = {"open": open_n, "paper_open": paper_open_n, "actionables": settle, "paper": paper_settle}
+                    _settler["last_result"] = {"open": open_n, "watchlist_open": watchlist_open_n, "paper_open": paper_open_n, "actionables": settle, "watchlist": watchlist_settle, "paper": paper_settle}
                 else:
-                    _settler["last_result"] = {"open": 0, "paper_open": 0, "updated": 0, "errors": []}
+                    _settler["last_result"] = {"open": 0, "watchlist_open": 0, "paper_open": 0, "updated": 0, "errors": []}
                 _settler["last"] = utc_now_iso()
                 conn.close()
             except Exception as e:
@@ -769,6 +773,7 @@ def create_app():
             (snap["ts"], snap["sport_key"]),
         ).fetchall()
         actionables_stats = _daily_actionable_stats(conn, date_et)
+        watchlist_stats = _daily_watchlist_stats(conn, date_et)
         conn.close()
 
         thresholds = _selection_thresholds()
@@ -803,11 +808,12 @@ def create_app():
 
         all_dicts = [row_to_dict(r) for r in rows_all]
         rows_actionable = [r for r in all_dicts if r.get("actionable") == 1][:100]
-        rows_watchlist = [r for r in all_dicts if r.get("view_mode") == "watchlist"][:100]
+        rows_watchlist = [r for r in all_dicts if r.get("view_mode") == "watchlist"][:10]
 
         summary = _match_status_counts(payloads)
         summary["date_et"] = date_et
         summary["actionables"] = actionables_stats
+        summary["watchlist"] = watchlist_stats
 
         return jsonify({
             "date_et": date_et,
@@ -891,26 +897,14 @@ def create_app():
 
     @app.get("/api/actionables")
     def api_actionables():
-        """Return captured daily actionables for a given ET date.
-
-        Params:
-          date: YYYY-MM-DD (defaults to latest date_et)
-        """
-        date_et = (request.args.get("date") or "").strip() or None
+        """Return ET-day captured actionables based on commence_time date in ET."""
+        date_et = (request.args.get("date") or "").strip() or _current_et_date()
         conn = connect()
-        if not date_et:
-            row = conn.execute("SELECT date_et FROM daily_actionables ORDER BY date_et DESC LIMIT 1").fetchone()
-            date_et = row["date_et"] if row else None
-        if not date_et:
-            conn.close()
-            return jsonify({"date_et": None, "count": 0, "rows": []})
-
-        _settle_open_actionables(conn, date_et=date_et, days_from=1)
+        _settle_open_actionables(conn, days_from=1)
         conn.commit()
 
         rows = conn.execute(
-            "SELECT * FROM daily_actionables WHERE date_et = ? ORDER BY ev_adj DESC NULLS LAST",
-            (date_et,),
+            "SELECT * FROM daily_actionables ORDER BY ev_adj DESC NULLS LAST, id DESC LIMIT 500"
         ).fetchall()
         conn.close()
 
@@ -918,6 +912,8 @@ def create_app():
         out = []
         for r in rows:
             d = dict(r)
+            if _et_date_from_iso(d.get("commence_time")) != date_et:
+                continue
             status_display = d.get("result") or "OPEN"
             status_note = None
             if status_display == "OPEN":
@@ -990,26 +986,36 @@ def create_app():
         except Exception:
             return None
 
-    def _daily_actionable_stats(conn, date_et: str):
-        row = conn.execute(
-            """
-            SELECT
-              COUNT(*) AS total,
-              SUM(CASE WHEN result = 'WIN' THEN 1 ELSE 0 END) AS wins,
-              SUM(CASE WHEN result = 'LOSS' THEN 1 ELSE 0 END) AS losses,
-              SUM(CASE WHEN COALESCE(result,'OPEN') = 'OPEN' THEN 1 ELSE 0 END) AS open_n
-            FROM daily_actionables
-            WHERE date_et = ?
-            """,
-            (date_et,),
-        ).fetchone()
-        stats = dict(row) if row else {"total": 0, "wins": 0, "losses": 0, "open_n": 0}
-        stats = {k: int(v or 0) for k, v in stats.items()}
-        wins = stats.get("wins", 0)
-        losses = stats.get("losses", 0)
+    def _daily_result_stats(conn, table_name: str, date_et: str):
+        rows = conn.execute(
+            f"SELECT result, commence_time FROM {table_name} ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+        total = wins = losses = open_n = 0
+        for row in rows:
+            if _et_date_from_iso(row["commence_time"]) != date_et:
+                continue
+            total += 1
+            result = row["result"] or "OPEN"
+            if result == "WIN":
+                wins += 1
+            elif result == "LOSS":
+                losses += 1
+            else:
+                open_n += 1
         denom = wins + losses
-        stats["win_rate"] = round(wins / denom, 3) if denom > 0 else None
-        return stats
+        return {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "open_n": open_n,
+            "win_rate": round(wins / denom, 3) if denom > 0 else None,
+        }
+
+    def _daily_actionable_stats(conn, date_et: str):
+        return _daily_result_stats(conn, "daily_actionables", date_et)
+
+    def _daily_watchlist_stats(conn, date_et: str):
+        return _daily_result_stats(conn, "daily_watchlist", date_et)
 
     def _match_status_counts(payload_rows: list[dict]):
         now_utc = datetime.now(timezone.utc)
@@ -1651,18 +1657,20 @@ def create_app():
                     """
                     SELECT id as candidate_id, match_id, commence_time, player_a, player_b,
                            market_type, side, line, book, price_decimal, price_american,
-                           confidence, ev, ev_adj
+                           confidence, ev, ev_adj, view_mode
                     FROM ranked_candidates
-                    WHERE snapshot_id = ? AND actionable = 1
+                    WHERE snapshot_id = ? AND view_mode IN ('actionable','watchlist')
                     ORDER BY ev_adj DESC NULLS LAST
                     """,
                     (snapshot_id,),
                 ).fetchall()
 
                 for r in rows:
+                    row_date_et = _et_date_from_iso(r["commence_time"]) or date_et
+                    target_table = "daily_actionables" if r["view_mode"] == 'actionable' else "daily_watchlist"
                     conn.execute(
-                        """
-                        INSERT OR IGNORE INTO daily_actionables (
+                        f"""
+                        INSERT OR IGNORE INTO {target_table} (
                           date_et, created_ts,
                           snapshot_id, candidate_id,
                           sport_key, match_id, commence_time, player_a, player_b,
@@ -1672,7 +1680,7 @@ def create_app():
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            date_et,
+                            row_date_et,
                             created_ts,
                             snapshot_id,
                             int(r["candidate_id"]),
