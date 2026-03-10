@@ -1,8 +1,184 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="card">
-  <h2 style="margin:0 0 8px 0;">Strategies + Backtests</h2>
-  <div class="muted">This tab now includes a live strategy audit so we can see what the model is actually selecting before we trust it.</div>
+  <h2 style="margin:0 0 8px 0;">Strategies + Performance Framework</h2>
+  <div class="muted">This page now tracks the live strategy system itself: tiering, sizing, market framework, recent changes, and performance buckets as more bets/data come in.</div>
+</div>
+
+<div class="grid2" style="grid-template-columns: repeat(4, 1fr); gap:12px; align-items:start;">
+  <div class="card" style="margin:0;">
+    <div class="muted">Recent snapshots audited</div>
+    <div style="font-size:24px; font-weight:800;">{{ audit.latest_snapshot_count }}</div>
+  </div>
+  <div class="card" style="margin:0;">
+    <div class="muted">Recent actionables</div>
+    <div style="font-size:24px; font-weight:800;">{{ audit.latest_actionables.n or 0 }}</div>
+    <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }}</div>
+  </div>
+  <div class="card" style="margin:0;">
+    <div class="muted">Settled actionables</div>
+    <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.settled_actionables or 0 }}</div>
+    <div class="muted">Win rate {% if audit.settled_actionables.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_actionables.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
+  </div>
+  <div class="card" style="margin:0;">
+    <div class="muted">CLV rows</div>
+    <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.clv_rows or 0 }}</div>
+    <div class="muted">Paper bets {{ audit.data_tracking.paper_bets or 0 }} • Open {{ audit.data_tracking.paper_bets_open or 0 }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Recent changes now active</h3>
+  <ul class="muted">
+    {% for note in audit.recent_changes %}
+    <li>{{ note }}</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Strategy framework by market</h3>
+  <table>
+    <thead><tr><th>Market</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      {% for row in audit.strategy_framework %}
+      <tr>
+        <td><strong>{{ row.market }}</strong></td>
+        <td>{{ row.status }}</td>
+        <td class="muted">{{ row.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid2" style="align-items:start;">
+  <div class="card">
+    <h3 style="margin-top:0;">Tier mix in current strategy</h3>
+    {% if audit.tier_mix %}
+    <table>
+      <thead><tr><th>Tier</th><th>Count</th></tr></thead>
+      <tbody>
+      {% for row in audit.tier_mix %}
+      <tr><td><strong>{{ row.tier }}</strong></td><td>{{ row.count }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="muted">No actionable tier mix yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Thresholds in force</h3>
+    <table>
+      <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+      <tbody>
+      {% for k, v in audit.thresholds.items() %}
+      <tr><td><strong>{{ k }}</strong></td><td class="muted">{{ v }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Tier performance</h3>
+  {% if audit.tier_performance %}
+  <table>
+    <thead><tr><th>Tier</th><th>Bets</th><th>Win rate</th><th>P/L (u)</th><th>Avg suggested units</th></tr></thead>
+    <tbody>
+    {% for row in audit.tier_performance %}
+      <tr>
+        <td><strong>{{ row.tier }}</strong></td>
+        <td>{{ row.bets }}</td>
+        <td>{% if row.win_rate is not none %}{{ '%.1f'|format(row.win_rate*100) }}% ({{ row.wins }}/{{ row.losses }}){% else %}—{% endif %}</td>
+        <td>{{ row.pnl_units }}</td>
+        <td>{{ row.avg_units }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="muted">Not enough settled tier-linked bets yet. This section will fill in as results accumulate.</div>
+  {% endif %}
+</div>
+
+<div class="grid2" style="align-items:start;">
+  <div class="card">
+    <h3 style="margin-top:0;">CLV by tier</h3>
+    {% if audit.clv_by_tier %}
+    <table>
+      <thead><tr><th>Tier</th><th>Rows</th><th>Avg CLV (dec)</th></tr></thead>
+      <tbody>
+      {% for row in audit.clv_by_tier %}
+        <tr><td><strong>{{ row.tier }}</strong></td><td>{{ row.rows }}</td><td>{{ row.avg_clv_dec }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="muted">Need more CLV samples tied to tiered bets.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Sizing feedback</h3>
+    <ul class="muted">
+      {% for note in audit.sizing_feedback %}
+      <li>{{ note }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<div class="grid2" style="align-items:start;">
+  <div class="card">
+    <h3 style="margin-top:0;">Favorites vs dogs</h3>
+    {% if audit.favorites_vs_dogs %}
+    <table>
+      <thead><tr><th>Bucket</th><th>Bets</th><th>Win rate</th></tr></thead>
+      <tbody>
+      {% for row in audit.favorites_vs_dogs %}
+        <tr><td><strong>{{ row.bucket }}</strong></td><td>{{ row.bets }}</td><td>{% if row.win_rate is not none %}{{ '%.1f'|format(row.win_rate*100) }}%{% else %}—{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="muted">Need settled results to compare favorites vs dogs.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Market type performance</h3>
+    {% if audit.market_type_performance %}
+    <table>
+      <thead><tr><th>Market</th><th>Bets</th><th>Win rate</th></tr></thead>
+      <tbody>
+      {% for row in audit.market_type_performance %}
+        <tr><td><strong>{{ row.market }}</strong></td><td>{{ row.bets }}</td><td>{% if row.win_rate is not none %}{{ '%.1f'|format(row.win_rate*100) }}%{% else %}—{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="muted">Need settled results to compare ML / spreads / totals.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Confidence bucket performance</h3>
+  {% if audit.confidence_bucket_performance %}
+  <table>
+    <thead><tr><th>Bucket</th><th>Bets</th><th>Win rate</th></tr></thead>
+    <tbody>
+    {% for row in audit.confidence_bucket_performance %}
+      <tr><td><strong>{{ row.bucket }}</strong></td><td>{{ row.bets }}</td><td>{% if row.win_rate is not none %}{{ '%.1f'|format(row.win_rate*100) }}%{% else %}—{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="muted">Need settled results before confidence-bucket performance becomes meaningful.</div>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -21,54 +197,9 @@
     <div class="card" style="margin:0;">
       <div class="muted">Settled actionables</div>
       <div style="font-size:24px; font-weight:800;">{{ audit.settled_actionables.settled_n or 0 }}</div>
-      <div class="muted">Win rate {% if audit.settled_actionables.win_rate is defined %}{{ '%.1f'|format(audit.settled_actionables.win_rate*100) }}%{% else %}—{% endif %}</div>
+      <div class="muted">Win rate {% if audit.settled_actionables.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_actionables.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
     </div>
   </div>
-</div>
-
-<div class="card">
-  <h3 style="margin-top:0;">Strategy framework</h3>
-  <table>
-    <thead><tr><th>Market</th><th>Status</th><th>Notes</th></tr></thead>
-    <tbody>
-      {% for row in audit.strategy_framework %}
-      <tr><td><strong>{{ row.market }}</strong></td><td>{{ row.status }}</td><td class="muted">{{ row.notes }}</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h3 style="margin-top:0;">Thresholds in force</h3>
-  <table>
-    <thead><tr><th>Rule</th><th>Value</th></tr></thead>
-    <tbody>
-      {% for k, v in audit.thresholds.items() %}
-      <tr><td><strong>{{ k }}</strong></td><td class="muted">{{ v }}</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h3 style="margin-top:0;">Recent actionable odds buckets</h3>
-  {% if audit.latest_actionables.odds_buckets %}
-  <table>
-    <thead><tr><th>Bucket</th><th>Count</th><th>Avg EV_adj</th><th>Avg conf</th></tr></thead>
-    <tbody>
-      {% for row in audit.latest_actionables.odds_buckets %}
-      <tr>
-        <td><strong>{{ row.bucket }}</strong></td>
-        <td class="muted">{{ row.n }}</td>
-        <td>{{ row.avg_ev_adj }}</td>
-        <td>{{ row.avg_conf }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="muted">No recent actionable rows to analyze yet.</div>
-  {% endif %}
 </div>
 
 <div class="card">
@@ -78,21 +209,5 @@
     <li>{{ note }}</li>
     {% endfor %}
   </ul>
-</div>
-
-<div class="card">
-  <h3 style="margin-top:0;">Strategy list</h3>
-  {% if strategies|length == 0 %}
-    <div class="muted">No strategies stored yet. Next step: turn the audit findings into explicit rule cards and threshold experiments.</div>
-  {% else %}
-    <table>
-      <thead><tr><th>Name</th><th>Description</th><th>Created</th></tr></thead>
-      <tbody>
-        {% for s in strategies %}
-          <tr><td><strong>{{ s.name }}</strong></td><td class="muted">{{ s.description or '' }}</td><td class="muted">{{ s.created_ts }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
 </div>
 {% endblock %}

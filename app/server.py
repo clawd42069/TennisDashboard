@@ -1052,6 +1052,13 @@ def create_app():
         }
         thresholds = _selection_thresholds()
         summary["thresholds"] = thresholds
+        summary["recent_changes"] = [
+            "Tier-based unit framework is active (Tier A-D + Watchlist/Debug).",
+            "Actionable cards now show strategy summary, why text, and main risk notes.",
+            "Heavy-favorite ML logic now suggests same-player alternative markets when available.",
+            "Price-aware ranking now favors cheaper bets when EV/confidence are in the same band.",
+            "Bet Tracker and Matchup Report both have live-refresh logic, but settled sample is still small.",
+        ]
         if not latest_ids:
             summary["notes"].append("No snapshots available yet.")
             return summary
@@ -1059,7 +1066,7 @@ def create_app():
         placeholders = ",".join("?" for _ in latest_ids)
         rows = conn.execute(
             f"""
-            SELECT price_decimal, confidence, ev, ev_adj, p_final, q_implied
+            SELECT id, snapshot_id, market_type, price_decimal, price_american, confidence, ev, ev_adj, p_final, q_implied
             FROM ranked_candidates
             WHERE snapshot_id IN ({placeholders})
             """,
@@ -1071,10 +1078,15 @@ def create_app():
         for row in rows:
             item = SimpleNamespace(**dict(row))
             view_mode, is_actionable = _classify_candidate(item, thresholds)
+            tier, units = _assign_tier_and_units(item, "actionable" if is_actionable else view_mode, thresholds)
+            out = dict(row)
+            out["view_mode_live"] = "actionable" if is_actionable else view_mode
+            out["selection_tier"] = tier
+            out["units_suggested_live"] = units
             if is_actionable:
-                actionables.append(dict(row))
+                actionables.append(out)
             elif view_mode == "watchlist":
-                watchlist.append(dict(row))
+                watchlist.append(out)
 
         def summarize(items):
             if not items:
@@ -1092,23 +1104,25 @@ def create_app():
                 "avg_ev_adj": round(sum(ev_adjs) / len(ev_adjs), 3) if ev_adjs else None,
             }
 
-        summary["latest_actionables"] = summarize(actionables)
-        summary["latest_watchlist"] = summarize(watchlist)
+        def safe_win_rate(wins, losses):
+            denom = (wins or 0) + (losses or 0)
+            return round((wins or 0) / denom, 3) if denom > 0 else None
 
-        def odds_bucket_label(price):
+        def price_bucket_from_decimal(price):
             if price is None:
                 return "unknown"
             if price < 1.8:
-                return "fav_lt_1.8"
+                return "favorite_lt_1.8"
             if price < 2.5:
-                return "mid_1.8_2.5"
-            if price < 5.0:
-                return "dog_2.5_5.0"
-            return "longshot_5_plus"
+                return "short_1.8_2.5"
+            return "dog_2.5_plus"
+
+        summary["latest_actionables"] = summarize(actionables)
+        summary["latest_watchlist"] = summarize(watchlist)
 
         buckets = {}
         for item in actionables:
-            bucket = odds_bucket_label(item.get("price_decimal"))
+            bucket = price_bucket_from_decimal(item.get("price_decimal"))
             buckets.setdefault(bucket, []).append(item)
         summary["latest_actionables"]["odds_buckets"] = [
             {
@@ -1119,6 +1133,11 @@ def create_app():
             }
             for bucket, items in sorted(buckets.items())
         ]
+
+        tier_counts = {}
+        for item in actionables:
+            tier_counts[item["selection_tier"]] = tier_counts.get(item["selection_tier"], 0) + 1
+        summary["tier_mix"] = [{"tier": k, "count": v} for k, v in sorted(tier_counts.items())]
 
         settled = conn.execute(
             """
@@ -1138,9 +1157,122 @@ def create_app():
         settled_n = int((settled or {"settled_n": 0})["settled_n"] or 0)
         if settled_n > 0:
             wins = int((settled or {"wins": 0})["wins"] or 0)
-            summary["settled_actionables"]["win_rate"] = round(wins / settled_n, 3)
+            losses = int((settled or {"losses": 0})["losses"] or 0)
+            summary["settled_actionables"]["win_rate"] = safe_win_rate(wins, losses)
         else:
             summary["notes"].append("Not enough settled actionables yet for a real threshold backtest.")
+
+        settled_join = conn.execute(
+            """
+            SELECT da.result, da.market_type, da.price_decimal, da.confidence, da.ev_adj, rc.units_suggested
+            FROM daily_actionables da
+            LEFT JOIN ranked_candidates rc ON rc.id = da.candidate_id
+            WHERE da.result IN ('WIN', 'LOSS')
+            """
+        ).fetchall()
+
+        tier_perf = {}
+        market_perf = {}
+        price_perf = {}
+        conf_perf = {}
+        sizing_rows = []
+
+        for row in settled_join:
+            row = dict(row)
+            candidate_like = SimpleNamespace(
+                confidence=row.get("confidence"),
+                ev_adj=row.get("ev_adj"),
+                price_decimal=row.get("price_decimal"),
+            )
+            tier, units = _assign_tier_and_units(candidate_like, "actionable", thresholds)
+            res = row.get("result")
+            win = 1 if res == "WIN" else 0
+            loss = 1 if res == "LOSS" else 0
+
+            t = tier_perf.setdefault(tier, {"tier": tier, "bets": 0, "wins": 0, "losses": 0, "win_rate": None, "pnl_units": 0.0, "avg_units": 0.0, "_units": []})
+            t["bets"] += 1; t["wins"] += win; t["losses"] += loss
+            eff_units = float(row.get("units_suggested") or units or 0.0)
+            pnl_units = eff_units if res == "WIN" else (-eff_units if res == "LOSS" else 0.0)
+            t["pnl_units"] += pnl_units; t["_units"].append(eff_units)
+
+            mkt = row.get("market_type") or "unknown"
+            m = market_perf.setdefault(mkt, {"market": mkt, "bets": 0, "wins": 0, "losses": 0, "win_rate": None})
+            m["bets"] += 1; m["wins"] += win; m["losses"] += loss
+
+            pb = price_bucket_from_decimal(row.get("price_decimal"))
+            p = price_perf.setdefault(pb, {"bucket": pb, "bets": 0, "wins": 0, "losses": 0, "win_rate": None})
+            p["bets"] += 1; p["wins"] += win; p["losses"] += loss
+
+            conf = row.get("confidence")
+            if conf is None:
+                cb = "unknown"
+            elif conf < 0.65:
+                cb = "conf_lt_65"
+            elif conf < 0.72:
+                cb = "conf_65_72"
+            else:
+                cb = "conf_72_plus"
+            c = conf_perf.setdefault(cb, {"bucket": cb, "bets": 0, "wins": 0, "losses": 0, "win_rate": None})
+            c["bets"] += 1; c["wins"] += win; c["losses"] += loss
+
+            sizing_rows.append({"tier": tier, "units": eff_units, "result": res})
+
+        for coll in (tier_perf, market_perf, price_perf, conf_perf):
+            for val in coll.values():
+                val["win_rate"] = safe_win_rate(val.get("wins", 0), val.get("losses", 0))
+                if "_units" in val:
+                    units_list = val.pop("_units")
+                    val["avg_units"] = round(sum(units_list) / len(units_list), 2) if units_list else 0.0
+                    val["pnl_units"] = round(val["pnl_units"], 2)
+
+        summary["tier_performance"] = list(sorted(tier_perf.values(), key=lambda x: x["tier"]))
+        summary["market_type_performance"] = list(sorted(market_perf.values(), key=lambda x: x["market"]))
+        summary["favorites_vs_dogs"] = list(sorted(price_perf.values(), key=lambda x: x["bucket"]))
+        summary["confidence_bucket_performance"] = list(sorted(conf_perf.values(), key=lambda x: x["bucket"]))
+
+        sizing_notes = []
+        if sizing_rows:
+            high_unit_rows = [r for r in sizing_rows if (r["units"] or 0) >= 3]
+            if high_unit_rows:
+                wins = sum(1 for r in high_unit_rows if r["result"] == "WIN")
+                losses = sum(1 for r in high_unit_rows if r["result"] == "LOSS")
+                sizing_notes.append(f"Higher-size bets (3u+) currently have win rate {((wins/(wins+losses))*100):.1f}% across {wins+losses} settled bets." if (wins+losses) else "Higher-size bets have no settled sample yet.")
+        else:
+            sizing_notes.append("Not enough settled bets to know whether suggested units are too aggressive or too small yet.")
+        summary["sizing_feedback"] = sizing_notes
+
+        clv_rows = conn.execute(
+            """
+            SELECT rc.units_suggested, cs.best_price_decimal, cs.consensus_price_decimal
+            FROM clv_snapshots cs
+            JOIN ranked_candidates rc ON rc.id = cs.candidate_id
+            ORDER BY cs.id DESC
+            LIMIT 500
+            """
+        ).fetchall()
+        clv_by_tier = {}
+        for row in clv_rows:
+            row = dict(row)
+            candidate_like = SimpleNamespace(confidence=0.0, ev_adj=0.0, price_decimal=None)
+            units = float(row.get("units_suggested") or 0.0)
+            tier = "Tier A" if units >= 4 else ("Tier B" if units >= 3 else ("Tier C" if units >= 2 else "Tier D"))
+            if row.get("best_price_decimal") and row.get("consensus_price_decimal"):
+                clv = float(row["best_price_decimal"]) - float(row["consensus_price_decimal"])
+                rec = clv_by_tier.setdefault(tier, {"tier": tier, "rows": 0, "avg_clv_dec": 0.0})
+                rec["rows"] += 1
+                rec["avg_clv_dec"] += clv
+        summary["clv_by_tier"] = []
+        for tier, rec in sorted(clv_by_tier.items()):
+            if rec["rows"]:
+                rec["avg_clv_dec"] = round(rec["avg_clv_dec"] / rec["rows"], 4)
+            summary["clv_by_tier"].append(rec)
+
+        summary["data_tracking"] = {
+            "settled_actionables": settled_n,
+            "paper_bets": int((conn.execute("SELECT COUNT(*) AS n FROM paper_bets").fetchone() or {"n": 0})["n"] or 0),
+            "paper_bets_open": int((conn.execute("SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'").fetchone() or {"n": 0})["n"] or 0),
+            "clv_rows": int((conn.execute("SELECT COUNT(*) AS n FROM clv_snapshots").fetchone() or {"n": 0})["n"] or 0),
+        }
 
         summary["strategy_framework"] = [
             {"market": "ML", "status": "active", "notes": "Primary live strategy. Tiered units, heavy-favorite guardrails, watchlist split, price-aware ranking are active."},
