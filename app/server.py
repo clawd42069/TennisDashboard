@@ -738,7 +738,29 @@ def create_app():
             "watchlist_min_conf": float(os.getenv("WATCHLIST_MIN_CONF") or 0.58),
             "watchlist_min_ev": float(os.getenv("WATCHLIST_MIN_EV") or 0.015),
             "watchlist_min_ev_adj": float(os.getenv("WATCHLIST_MIN_EV_ADJ") or 0.015),
+            "heavy_favorite_max_price": float(os.getenv("HEAVY_FAVORITE_MAX_PRICE_DEC") or 1.20),
+            "heavy_favorite_min_conf": float(os.getenv("HEAVY_FAVORITE_MIN_CONF") or 0.74),
+            "heavy_favorite_min_ev": float(os.getenv("HEAVY_FAVORITE_MIN_EV") or 0.08),
+            "heavy_favorite_min_ev_adj": float(os.getenv("HEAVY_FAVORITE_MIN_EV_ADJ") or 0.055),
+            "tie_ev_band": float(os.getenv("SELECTION_TIE_EV_BAND") or 0.015),
+            "tie_conf_band": float(os.getenv("SELECTION_TIE_CONF_BAND") or 0.04),
         }
+
+    def _is_heavy_favorite_ml(c, thresholds: dict) -> bool:
+        return (
+            (getattr(c, "market_type", None) == "ML")
+            and (getattr(c, "price_decimal", None) is not None)
+            and float(c.price_decimal) <= thresholds["heavy_favorite_max_price"]
+        )
+
+    def _selection_sort_key(c, thresholds: dict):
+        ev_adj = float(getattr(c, "ev_adj", -999) or -999)
+        conf = float(getattr(c, "confidence", 0.0) or 0.0)
+        price = float(getattr(c, "price_decimal", 999.0) or 999.0)
+        heavy_fav = 1 if _is_heavy_favorite_ml(c, thresholds) else 0
+        ev_bucket = round(ev_adj / max(thresholds["tie_ev_band"], 0.001))
+        conf_bucket = round(conf / max(thresholds["tie_conf_band"], 0.01))
+        return (-ev_bucket, -conf_bucket, heavy_fav, price, -ev_adj, -conf)
 
     def _classify_candidate(c, thresholds: dict) -> tuple[str, bool]:
         if c.price_decimal is None or c.ev is None or c.ev_adj is None or c.q_implied is None or c.p_final is None:
@@ -754,6 +776,15 @@ def create_app():
             and model_edge <= thresholds["actionable_max_edge"]
         )
         if actionable:
+            if _is_heavy_favorite_ml(c, thresholds):
+                heavy_ok = (
+                    (c.confidence or 0.0) >= thresholds["heavy_favorite_min_conf"]
+                    and c.ev >= thresholds["heavy_favorite_min_ev"]
+                    and c.ev_adj >= thresholds["heavy_favorite_min_ev_adj"]
+                )
+                if heavy_ok:
+                    return "actionable", True
+                return "watchlist", False
             return "actionable", True
 
         watchlist = (
@@ -962,6 +993,12 @@ def create_app():
         candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=top_n)
 
         thresholds = _selection_thresholds()
+
+        for c in candidates:
+            if _is_heavy_favorite_ml(c, thresholds):
+                c.reasons.append("Heavy-favorite ML: prefer same-player spread / alt market when available; downgrade plain ML unless edge is exceptional.")
+
+        candidates = sorted(candidates, key=lambda c: _selection_sort_key(c, thresholds))
 
         actionable = []
         watchlist = []
