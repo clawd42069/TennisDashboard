@@ -23,7 +23,9 @@
       <option value="h2h">ML</option>
       <option value="h2h,spreads,totals">ML + spreads + totals</option>
     </select>
-    <button onclick="loadDailyMatchups(true)">Load today’s ATP slate</button>
+    <input id="slateDate" type="date" />
+    <button onclick="loadDailyMatchups(true)">Load selected ET day</button>
+    <button onclick="setTodayAndLoad()">Today</button>
     <button onclick="fetchOdds()">Fetch live odds</button>
     <button onclick="stopAutoRefresh()">Stop refresh</button>
   </div>
@@ -133,6 +135,7 @@ const pageSize = 8;
 const ACTIONABLES_POLL_MS = 60000;
 let currentSnapshot = null;
 let currentSlateSummary = null;
+let currentEtDate = null;
 let liveMode = false;
 
 function pct(x, digits=1){
@@ -178,6 +181,14 @@ function americanOddsText(v){
 
 function modeText(){
   return liveMode ? 'Live mode' : 'Saved snapshot mode';
+}
+
+function etTodayString(){
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function currentSelectedDate(){
+  return document.getElementById('slateDate').value || etTodayString();
 }
 
 function renderMode(){
@@ -417,16 +428,24 @@ function computeSlateSummaryFromOutputs(outputs){
   return summary;
 }
 
+function setTodayAndLoad(){
+  document.getElementById('slateDate').value = etTodayString();
+  loadDailyMatchups(true);
+}
+
 async function loadDailyMatchups(showMessage=false){
   stopAutoRefresh(false);
   const meta = document.getElementById('snapshotMeta');
-  if (showMessage) meta.textContent = 'Loading today’s ATP slate…';
-  const r = await fetch('/api/matchups/daily?auto_fetch=1');
+  const date = currentSelectedDate();
+  if (showMessage) meta.textContent = `Loading ATP slate for ${date}…`;
+  const r = await fetch(`/api/matchups/daily?date=${encodeURIComponent(date)}&auto_fetch=1`);
   const j = await r.json();
   if (j.error){
     meta.innerHTML = `<span class="err">${j.error}</span><br><span class="muted">${j.message || ''}</span>`;
     return;
   }
+  currentEtDate = j.date_et || date;
+  document.getElementById('slateDate').value = currentEtDate;
   currentSnapshot = j.snapshot || null;
   currentSlateSummary = j.slate_summary || null;
   lastOutputs = j.candidates_debug || [];
@@ -439,8 +458,8 @@ async function loadDailyMatchups(showMessage=false){
   renderActionable();
   renderWatchlist();
   renderPage();
-  meta.textContent = currentSnapshot ? `Loaded today’s ATP slate • ${currentSnapshot.sport_key || ''} • updated ${fmtLocal(currentSnapshot.ts)}` : 'No ATP slate loaded.';
-  await loadActionables();
+  meta.textContent = currentSnapshot ? `Loaded ATP slate for ${currentEtDate} • ${currentSnapshot.sport_key || ''} • updated ${fmtLocal(currentSnapshot.ts)}` : `No ATP slate loaded for ${currentEtDate}.`;
+  await loadActionables(currentEtDate);
 }
 
 async function loadSnapshot(snapshotId, quiet=false){
@@ -557,11 +576,12 @@ function setActionablesPolling(enabled){
   }
 }
 
-async function loadActionables(){
+async function loadActionables(dateOverride=null){
   const meta = document.getElementById('actionablesMeta');
   const body = document.getElementById('actionablesAudit');
   meta.textContent = 'Loading…';
-  const r = await fetch('/api/actionables');
+  const date = dateOverride || currentEtDate || currentSelectedDate();
+  const r = await fetch(`/api/actionables?date=${encodeURIComponent(date)}`);
   const j = await r.json();
   const rows = j.rows || [];
 
@@ -668,9 +688,9 @@ function clearClv(){
 renderMode();
 renderSummary();
 renderWatchlist();
+document.getElementById('slateDate').value = etTodayString();
 loadSports();
 loadDailyMatchups();
-loadActionables();
 </script>
 
 {% endblock %}
