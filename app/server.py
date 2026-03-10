@@ -71,6 +71,7 @@ def create_app():
         return render_template("matchups.html")
 
     ET = ZoneInfo("America/New_York")
+    MATCH_LIVE_WINDOW_MIN = int(os.getenv("MATCH_LIVE_WINDOW_MIN") or 180)
 
     def fmt_et(iso: str | None):
         if not iso:
@@ -722,6 +723,101 @@ def create_app():
             "candidates": [dict(r) for r in rows],
         })
 
+    @app.get("/api/matchups/daily")
+    def api_matchups_daily():
+        date_et = request.args.get("date") or _current_et_date()
+        auto_fetch = (request.args.get("auto_fetch") or "1") == "1"
+        conn = connect()
+        snap = _latest_daily_snapshot(conn, date_et)
+        conn.close()
+
+        if not snap and auto_fetch:
+            try:
+                sports, _headers = list_sports()
+                atp = [s for s in (sports or []) if s.get("active") and str(s.get("key") or "").startswith("tennis_atp")]
+                atp = sorted(atp, key=lambda s: str(s.get("key") or ""))
+                if not atp:
+                    return jsonify({"error": "no_active_atp_feed", "date_et": date_et}), 404
+                sport_key = atp[0]["key"]
+                with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets=h2h&capture_daily=1"):
+                    resp = api_odds()
+                if isinstance(resp, tuple):
+                    response, status = resp
+                    return response, status
+                data = resp.get_json()
+                summary = _match_status_counts(data.get("outputs") or [])
+                summary["date_et"] = date_et
+                conn = connect()
+                summary["actionables"] = _daily_actionable_stats(conn, date_et)
+                conn.close()
+                data["date_et"] = date_et
+                data["slate_summary"] = summary
+                return jsonify(data)
+            except Exception as e:
+                return jsonify({"error": "daily_fetch_failed", "message": str(e), "date_et": date_et}), 500
+
+        if not snap:
+            return jsonify({"date_et": date_et, "snapshot": None, "candidates_debug": [], "candidates_watchlist": [], "candidates_actionable": []})
+
+        conn = connect()
+        rows_all = conn.execute(
+            "SELECT * FROM ranked_candidates WHERE snapshot_id = ? ORDER BY ev_adj DESC NULLS LAST, confidence DESC NULLS LAST LIMIT 300",
+            (snap["id"],),
+        ).fetchall()
+        payload_rows = conn.execute(
+            "SELECT match_id, payload_json FROM odds_snapshots WHERE ts = ? AND sport_key = ?",
+            (snap["ts"], snap["sport_key"]),
+        ).fetchall()
+        actionables_stats = _daily_actionable_stats(conn, date_et)
+        conn.close()
+
+        thresholds = _selection_thresholds()
+
+        def row_to_dict(r):
+            d = dict(r)
+            item = SimpleNamespace(**d)
+            live_view_mode, is_actionable = _classify_candidate(item, thresholds)
+            tier, units = _assign_tier_and_units(item, "actionable" if is_actionable else live_view_mode, thresholds)
+            d["actionable"] = 1 if is_actionable else 0
+            d["view_mode"] = live_view_mode
+            d["selection_tier"] = tier
+            d["units_suggested"] = units if is_actionable else None
+            d["strategy_summary"] = d.get("strategy_summary") or None
+            d["strategy_why"] = d.get("strategy_why") or []
+            d["strategy_risk"] = d.get("strategy_risk") or []
+            d["alternative_market"] = d.get("alternative_market") or None
+            d["reasons"] = d.get("reasons") or []
+            return d
+
+        payloads = []
+        for r in payload_rows:
+            try:
+                m = json.loads(r["payload_json"])
+                payloads.append({
+                    "match_id": r["match_id"],
+                    "commence_time": m.get("commence_time"),
+                    "completed": False,
+                })
+            except Exception:
+                pass
+
+        all_dicts = [row_to_dict(r) for r in rows_all]
+        rows_actionable = [r for r in all_dicts if r.get("actionable") == 1][:100]
+        rows_watchlist = [r for r in all_dicts if r.get("view_mode") == "watchlist"][:100]
+
+        summary = _match_status_counts(payloads)
+        summary["date_et"] = date_et
+        summary["actionables"] = actionables_stats
+
+        return jsonify({
+            "date_et": date_et,
+            "snapshot": dict(snap),
+            "slate_summary": summary,
+            "candidates_debug": all_dicts,
+            "candidates_watchlist": rows_watchlist,
+            "candidates_actionable": rows_actionable,
+        })
+
     @app.get("/api/snapshots/recent")
     def api_snapshots_recent():
         """Return recent refresh snapshots with quick candidate counts for UI browsing."""
@@ -881,6 +977,75 @@ def create_app():
             return "Grass"
         if "roland" in (sport_key or "") or "french_open" in (sport_key or ""):
             return "Clay"
+        return None
+
+    def _current_et_date() -> str:
+        return datetime.now(timezone.utc).astimezone(ET).date().isoformat()
+
+    def _et_date_from_iso(ts: str | None) -> str | None:
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(ET).date().isoformat()
+        except Exception:
+            return None
+
+    def _daily_actionable_stats(conn, date_et: str):
+        row = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN result = 'WIN' THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN result = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+              SUM(CASE WHEN COALESCE(result,'OPEN') = 'OPEN' THEN 1 ELSE 0 END) AS open_n
+            FROM daily_actionables
+            WHERE date_et = ?
+            """,
+            (date_et,),
+        ).fetchone()
+        stats = dict(row) if row else {"total": 0, "wins": 0, "losses": 0, "open_n": 0}
+        stats = {k: int(v or 0) for k, v in stats.items()}
+        wins = stats.get("wins", 0)
+        losses = stats.get("losses", 0)
+        denom = wins + losses
+        stats["win_rate"] = round(wins / denom, 3) if denom > 0 else None
+        return stats
+
+    def _match_status_counts(payload_rows: list[dict]):
+        now_utc = datetime.now(timezone.utc)
+        out = {"yet_to_start": 0, "live": 0, "ended": 0, "total_matches": 0}
+        seen = set()
+        for row in payload_rows:
+            match_id = row.get("match_id")
+            if match_id in seen:
+                continue
+            seen.add(match_id)
+            out["total_matches"] += 1
+            commence_time = row.get("commence_time")
+            completed = row.get("completed")
+            if completed:
+                out["ended"] += 1
+                continue
+            try:
+                dt = datetime.fromisoformat((commence_time or "").replace("Z", "+00:00"))
+            except Exception:
+                out["yet_to_start"] += 1
+                continue
+            if dt > now_utc:
+                out["yet_to_start"] += 1
+            elif dt + timedelta(minutes=MATCH_LIVE_WINDOW_MIN) > now_utc:
+                out["live"] += 1
+            else:
+                out["ended"] += 1
+        return out
+
+    def _latest_daily_snapshot(conn, date_et: str):
+        rows = conn.execute(
+            "SELECT id, ts, sport_key, markets, regions, top_n, refresh_interval_sec, model_version FROM snapshots WHERE sport_key LIKE 'tennis_atp%' ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+        for row in rows:
+            if _et_date_from_iso(row["ts"]) == date_et:
+                return row
         return None
 
     def _selection_thresholds():

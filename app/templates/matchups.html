@@ -3,8 +3,8 @@
 <div class="card">
   <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
     <div>
-      <h2 style="margin:0 0 8px 0;">Matchup Report</h2>
-      <div class="muted">Live odds + ranked candidates. Snapshot browsing is hidden for now, but the backend support is still preserved so we can bring it back later.</div>
+      <h2 style="margin:0 0 8px 0;">Matchups</h2>
+      <div class="muted">ATP match slate + ranked candidates. The page now defaults to the current ET-day slate so you don’t have to manually fetch every morning.</div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <span id="modePill" class="pill">Saved snapshot mode</span>
@@ -14,8 +14,8 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">Live feed controls</h3>
-  <div class="muted">Pull active tennis feeds from The Odds API. If live fetch is unavailable, the page falls back to the latest saved snapshot.</div>
+  <h3 style="margin-top:0;">ATP slate controls</h3>
+  <div class="muted">Daily ET slate is loaded automatically. You can still manually refresh or pull a specific live feed if needed.</div>
   <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
     <button onclick="loadSports()">Load tennis feeds</button>
     <select id="sportKey"></select>
@@ -23,9 +23,9 @@
       <option value="h2h">ML</option>
       <option value="h2h,spreads,totals">ML + spreads + totals</option>
     </select>
+    <button onclick="loadDailyMatchups(true)">Load today’s ATP slate</button>
     <button onclick="fetchOdds()">Fetch live odds</button>
     <button onclick="stopAutoRefresh()">Stop refresh</button>
-    <button onclick="loadLatestSnapshot(true)">Reload latest saved</button>
   </div>
   <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
   <div id="snapshotMeta" class="muted" style="margin-top:8px;"></div>
@@ -147,6 +147,7 @@ let page = 1;
 const pageSize = 8;
 const ACTIONABLES_POLL_MS = 60000;
 let currentSnapshot = null;
+let currentSlateSummary = null;
 let liveMode = false;
 
 function pct(x, digits=1){
@@ -201,29 +202,30 @@ function renderMode(){
 
 function renderSummary(){
   const wrap = document.getElementById('summaryCards');
-  const snap = currentSnapshot || {};
-  const actionableCount = lastActionable.length;
   const best = lastActionable[0] || lastWatchlist[0] || lastOutputs[0] || null;
+  const slate = currentSlateSummary || {};
+  const a = (slate.actionables || {});
+  const dailyWinRate = a.win_rate !== null && a.win_rate !== undefined ? `${(a.win_rate*100).toFixed(1)}%` : '—';
   wrap.innerHTML = `
     <div class="card" style="margin:0;">
-      <div class="muted">Snapshot</div>
-      <div style="font-size:22px; font-weight:800;">${snap.id ?? '—'}</div>
-      <div class="muted">${fmtLocal(snap.ts)}</div>
+      <div class="muted">Today’s ATP slate</div>
+      <div style="font-size:22px; font-weight:800;">${slate.total_matches ?? lastOutputs.length ?? 0} matches</div>
+      <div class="muted">ET day ${slate.date_et || '—'}</div>
     </div>
     <div class="card" style="margin:0;">
-      <div class="muted">Feed</div>
-      <div style="font-size:18px; font-weight:800;">${snap.sport_key || '—'}</div>
-      <div class="muted">markets: ${snap.markets || '—'}</div>
+      <div class="muted">Slate status</div>
+      <div style="font-size:18px; font-weight:800;">${slate.yet_to_start ?? '—'} not started • ${slate.live ?? '—'} live • ${slate.ended ?? '—'} ended</div>
+      <div class="muted">Auto-updates through the day</div>
     </div>
     <div class="card" style="margin:0;">
-      <div class="muted">Actionable / watchlist / total</div>
-      <div style="font-size:22px; font-weight:800;">${actionableCount} / ${lastWatchlist.length} / ${lastOutputs.length}</div>
-      <div class="muted">Top N target: ${snap.top_n ?? '—'}</div>
+      <div class="muted">Daily actionable win rate</div>
+      <div style="font-size:22px; font-weight:800;">${dailyWinRate}</div>
+      <div class="muted">${a.wins ?? 0}W / ${a.losses ?? 0}L • ${a.open_n ?? 0} still open</div>
     </div>
     <div class="card" style="margin:0;">
       <div class="muted">Best actionable</div>
       <div style="font-size:18px; font-weight:800;">${best ? best.side : '—'}</div>
-      <div class="muted">EV_adj ${best ? signed(best.ev_adj) : '—'} • Conf ${best ? pct(best.confidence,0) : '—'}</div>
+      <div class="muted">${best && best.selection_tier ? `${best.selection_tier} • ` : ''}EV_adj ${best ? signed(best.ev_adj) : '—'} • Conf ${best ? pct(best.confidence,0) : '—'}</div>
     </div>
   `;
 }
@@ -408,6 +410,54 @@ async function loadSports(){
   el.textContent = `Found ${(j.tennis||[]).length} tennis feeds. Requests remaining: ${j.requests_remaining ?? 'n/a'}`;
 }
 
+function computeSlateSummaryFromOutputs(outputs){
+  const now = Date.now();
+  const seen = new Set();
+  const summary = { total_matches: 0, yet_to_start: 0, live: 0, ended: 0 };
+  (outputs || []).forEach(row => {
+    if (!row.match_id || seen.has(row.match_id)) return;
+    seen.add(row.match_id);
+    summary.total_matches += 1;
+    const start = row.commence_time ? Date.parse(row.commence_time) : null;
+    if (row.completed) {
+      summary.ended += 1;
+    } else if (start && now < start) {
+      summary.yet_to_start += 1;
+    } else if (start && now < start + (180 * 60 * 1000)) {
+      summary.live += 1;
+    } else {
+      summary.ended += 1;
+    }
+  });
+  return summary;
+}
+
+async function loadDailyMatchups(showMessage=false){
+  stopAutoRefresh(false);
+  const meta = document.getElementById('snapshotMeta');
+  if (showMessage) meta.textContent = 'Loading today’s ATP slate…';
+  const r = await fetch('/api/matchups/daily?auto_fetch=1');
+  const j = await r.json();
+  if (j.error){
+    meta.innerHTML = `<span class="err">${j.error}</span><br><span class="muted">${j.message || ''}</span>`;
+    return;
+  }
+  currentSnapshot = j.snapshot || null;
+  currentSlateSummary = j.slate_summary || null;
+  lastOutputs = j.candidates_debug || [];
+  lastActionable = j.candidates_actionable || [];
+  lastWatchlist = j.candidates_watchlist || [];
+  page = 1;
+  liveMode = false;
+  renderMode();
+  renderSummary();
+  renderActionable();
+  renderWatchlist();
+  renderPage();
+  meta.textContent = currentSnapshot ? `Loaded today’s ATP slate • ${currentSnapshot.sport_key || ''} • updated ${fmtLocal(currentSnapshot.ts)}` : 'No ATP slate loaded.';
+  await loadActionables();
+}
+
 async function loadSnapshot(snapshotId, quiet=false){
   const meta = document.getElementById('snapshotMeta');
   if (!quiet) meta.textContent = 'Loading latest saved snapshot…';
@@ -421,6 +471,7 @@ async function loadSnapshot(snapshotId, quiet=false){
   const watchlist = await watchlistResp.json();
 
   currentSnapshot = all.snapshot || null;
+  currentSlateSummary = currentSlateSummary || { total_matches: all.count || 0 };
   lastOutputs = all.candidates || [];
   lastActionable = actionable.candidates || [];
   lastWatchlist = watchlist.candidates || [];
@@ -478,6 +529,7 @@ async function fetchOdds(){
     regions: j.regions,
     top_n: (j.candidates_debug || []).length,
   };
+  currentSlateSummary = Object.assign(computeSlateSummaryFromOutputs(j.outputs || []), { date_et: (new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })) });
   lastActionable = j.candidates_actionable || [];
   lastWatchlist = j.candidates_watchlist || [];
   lastOutputs = j.candidates_debug || [];
@@ -541,6 +593,11 @@ async function loadActionables(){
   }
 
   meta.textContent = `${j.date_et} • ${rows.length} captured actionables • ${pendingRows.length} still pending`;
+  currentSlateSummary = Object.assign({}, currentSlateSummary || {}, { date_et: j.date_et, actionables: { total: rows.length, wins: rows.filter(r => (r.result || r.status_display) === 'WIN').length, losses: rows.filter(r => (r.result || r.status_display) === 'LOSS').length, open_n: pendingRows.length } });
+  const wins = (currentSlateSummary.actionables || {}).wins || 0;
+  const losses = (currentSlateSummary.actionables || {}).losses || 0;
+  currentSlateSummary.actionables.win_rate = (wins + losses) > 0 ? (wins / (wins + losses)) : null;
+  renderSummary();
   setActionablesPolling(pendingRows.length > 0);
 
   body.innerHTML = rows.slice(0,6).map(row => {
@@ -627,7 +684,7 @@ renderMode();
 renderSummary();
 renderWatchlist();
 loadSports();
-loadLatestSnapshot();
+loadDailyMatchups();
 loadActionables();
 </script>
 
