@@ -95,6 +95,7 @@ let lastOutputs = [];
 let lastActionable = [];
 let page = 1;
 const pageSize = 8;
+const ACTIONABLES_POLL_MS = 15000;
 let currentSnapshot = null;
 let liveMode = false;
 
@@ -366,6 +367,19 @@ function stopAutoRefresh(showMessage=true){
   }
 }
 
+function setActionablesPolling(enabled){
+  if (enabled){
+    if (!actionablesTimer){
+      actionablesTimer = setInterval(loadActionables, ACTIONABLES_POLL_MS);
+    }
+    return;
+  }
+  if (actionablesTimer){
+    clearInterval(actionablesTimer);
+    actionablesTimer = null;
+  }
+}
+
 async function loadActionables(){
   const meta = document.getElementById('actionablesMeta');
   const body = document.getElementById('actionablesAudit');
@@ -373,11 +387,21 @@ async function loadActionables(){
   const r = await fetch('/api/actionables');
   const j = await r.json();
   const rows = j.rows || [];
-  meta.textContent = j.date_et ? `${j.date_et} • ${rows.length} captured actionables` : 'No captured daily actionables yet.';
+
+  const pendingRows = rows.filter(row => {
+    const status = row.status_display || row.result || 'OPEN';
+    return !['WIN','LOSS','PUSH','VOID'].includes(status);
+  });
+
   if (!rows.length){
+    meta.textContent = 'No captured daily actionables yet.';
     body.innerHTML = '<div class="muted">Nothing captured yet.</div>';
+    setActionablesPolling(false);
     return;
   }
+
+  meta.textContent = `${j.date_et} • ${rows.length} captured actionables • ${pendingRows.length} still pending`;
+  setActionablesPolling(pendingRows.length > 0);
 
   body.innerHTML = rows.slice(0,6).map(row => {
     const status = row.status_display || row.result || 'OPEN';
@@ -464,8 +488,6 @@ renderSummary();
 loadSports();
 loadLatestSnapshot();
 loadActionables();
-if (actionablesTimer) clearInterval(actionablesTimer);
-actionablesTimer = setInterval(loadActionables, 60000);
 </script>
 
 {% endblock %}
