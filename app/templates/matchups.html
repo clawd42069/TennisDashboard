@@ -303,10 +303,6 @@ function candidateCard(c, compact=false, section='debug'){
         ${c.units_suggested ? pill(`Units <strong>${c.units_suggested}</strong>`) : ''}
       </div>
 
-      <div class="muted" style="margin-top:8px;">
-        Read left to right: <strong>Tennis Edge</strong> tells you if the matchup itself is strong, <strong>Price Edge</strong> tells you if the odds are worth it, and <strong>Trust</strong> tells you how reliable the read is.
-      </div>
-
       <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         ${pill(`Win Chance <strong>${pct(c.p_final, 1)}</strong>`)}
         ${pill(`Market Chance <strong>${pct(c.q_implied, 1)}</strong>`)}
