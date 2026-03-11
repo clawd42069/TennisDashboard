@@ -33,6 +33,19 @@
   <div id="snapshotMeta" class="muted" style="margin-top:8px;"></div>
 </div>
 
+<div class="card">
+  <h3 style="margin-top:0;">How to read the cards</h3>
+  <div class="muted">The strategy thinks in this order: <strong>Tennis Edge</strong> first, <strong>Price Edge</strong> second, <strong>Trust</strong> third. A bet should usually need all 3 to be good before it becomes actionable.</div>
+  <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+    <span class="pill">Tennis Edge = how strong the actual player-vs-player case is</span>
+    <span class="pill">Price Edge = whether the market is underpricing that case</span>
+    <span class="pill">Trust = how reliable the data/read is</span>
+    <span class="pill">Win Chance = our estimated chance to win</span>
+    <span class="pill">Market Chance = implied chance from the odds</span>
+    <span class="pill">Bet Score = value adjusted for conviction</span>
+  </div>
+</div>
+
 <div class="grid2" style="align-items:start;">
   <div class="card">
     <h3 style="margin-top:0;">Current view summary</h3>
@@ -233,16 +246,23 @@ function decToAmerican(dec){
   return `${Math.round(-100/(dec-1))}`;
 }
 
+function candidateStateLabel(c, section){
+  if (section === 'actionable') return 'Actionable';
+  if (section === 'watchlist' || c.selection_tier === 'Watchlist') return 'Watchlist';
+  if (c.selection_tier === 'Debug' || section === 'debug') return 'Pass';
+  return c.selection_tier || 'Pass';
+}
+
 function candidateCard(c, compact=false, section='debug'){
   const reasons = (c.reasons || []).map(r => `<li>${r}</li>`).join('');
   const axisNotes = c.axis_notes || {};
   const component = c.component_scores || {};
   const drill = [
     ['Candidate ID', c.id ?? '—'],
-    ['Price', americanOddsText(c.price_american || decToAmerican(c.price_decimal))],
-    ['Model', `p0 ${num(c.p0)} → p ${num(c.p_final)} | q ${num(c.q_implied)}`],
-    ['Edge', `EV ${signed(c.ev)} | EV_adj ${signed(c.ev_adj)}`],
-    ['Confidence', pct(c.confidence, 0)],
+    ['Odds', americanOddsText(c.price_american || decToAmerican(c.price_decimal))],
+    ['Model view', `Base ${num(c.p0)} → Win chance ${num(c.p_final)} | Market chance ${num(c.q_implied)}`],
+    ['Bet math', `Expected profit ${signed(c.ev)} | Bet score ${signed(c.ev_adj)}`],
+    ['Conviction', pct(c.confidence, 0)],
     ['Units', c.units_suggested ?? '—'],
     ['Line', c.line ?? '—'],
     ['Surface', c.surface || '—'],
@@ -272,6 +292,7 @@ function candidateCard(c, compact=false, section='debug'){
   ].map(([k,v]) => `<li>${k}: <strong>${v ?? '—'}</strong></li>`).join('');
 
   const stage = stageInfo(c);
+  const stateLabel = candidateStateLabel(c, section);
   return `
     <div class="card ${compact ? '' : 'live'}" style="margin-top:12px; border-left:4px solid ${stage.label === 'PRE' ? '#64748b' : (stage.label === 'LIVE' ? '#f59e0b' : '#10b981')};">
       <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
@@ -286,17 +307,24 @@ function candidateCard(c, compact=false, section='debug'){
       </div>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        ${c.selection_tier ? pill(`Tier <strong>${c.selection_tier}</strong>`) : ''}
-        ${pill(`Price <strong>${americanOddsText(c.price_american || decToAmerican(c.price_decimal))}</strong>`)}
-        ${pill(`Matchup <strong>${c.matchup_strength !== undefined && c.matchup_strength !== null ? Math.round(c.matchup_strength) : '—'}</strong>`)}
-        ${pill(`Market <strong>${c.market_value !== undefined && c.market_value !== null ? Math.round(c.market_value) : '—'}</strong>`)}
-        ${pill(`Reliability <strong>${c.reliability !== undefined && c.reliability !== null ? Math.round(c.reliability) : '—'}</strong>`)}
-        ${pill(`p <strong>${num(c.p_final)}</strong>`)}
-        ${pill(`q <strong>${num(c.q_implied)}</strong>`)}
-        ${pill(`EV <strong>${signed(c.ev)}</strong>`)}
-        ${pill(`Conf <strong>${pct(c.confidence, 0)}</strong>`)}
-        ${pill(`EV_adj <strong>${signed(c.ev_adj)}</strong>`)}
+        ${pill(`State <strong>${stateLabel}</strong>`)}
+        ${pill(`Odds <strong>${americanOddsText(c.price_american || decToAmerican(c.price_decimal))}</strong>`)}
+        ${pill(`Tennis Edge <strong>${c.matchup_strength !== undefined && c.matchup_strength !== null ? Math.round(c.matchup_strength) : '—'}</strong>`)}
+        ${pill(`Price Edge <strong>${c.market_value !== undefined && c.market_value !== null ? Math.round(c.market_value) : '—'}</strong>`)}
+        ${pill(`Trust <strong>${c.reliability !== undefined && c.reliability !== null ? Math.round(c.reliability) : '—'}</strong>`)}
+        ${pill(`Bet Score <strong>${signed(c.ev_adj)}</strong>`)}
         ${c.units_suggested ? pill(`Units <strong>${c.units_suggested}</strong>`) : ''}
+      </div>
+
+      <div class="muted" style="margin-top:8px;">
+        Read left to right: <strong>Tennis Edge</strong> tells you if the matchup itself is strong, <strong>Price Edge</strong> tells you if the odds are worth it, and <strong>Trust</strong> tells you how reliable the read is.
+      </div>
+
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${pill(`Win Chance <strong>${pct(c.p_final, 1)}</strong>`)}
+        ${pill(`Market Chance <strong>${pct(c.q_implied, 1)}</strong>`)}
+        ${pill(`Expected Profit <strong>${signed(c.ev)}</strong>`)}
+        ${pill(`Conviction <strong>${pct(c.confidence, 0)}</strong>`)}
       </div>
 
       ${c.strategy_summary ? `<div style="margin-top:10px;"><strong>${c.strategy_summary}</strong></div>` : ''}
