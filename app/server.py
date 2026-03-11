@@ -1026,7 +1026,12 @@ def create_app():
 
     @app.get("/api/actionables")
     def api_actionables():
-        """Return ET-day captured actionables based on commence_time date in ET."""
+        """Return ET-day actionables that still qualify under the latest live classification.
+
+        Important: daily_actionables is an audit log of what was captured earlier.
+        For UI purposes, we reconcile each row against the latest ranked_candidates state so
+        stale/demoted bets do not keep showing up as if they are still live actionables.
+        """
         date_et = (request.args.get("date") or "").strip() or _current_et_date()
         conn = connect()
         _settle_open_actionables(conn, days_from=1)
@@ -1035,14 +1040,48 @@ def create_app():
         rows = conn.execute(
             "SELECT * FROM daily_actionables ORDER BY ev_adj DESC NULLS LAST, id DESC LIMIT 500"
         ).fetchall()
-        conn.close()
 
+        thresholds = _selection_thresholds()
         now_utc = datetime.now(timezone.utc)
         out = []
+        demoted = []
         for r in rows:
             d = dict(r)
             if _et_date_from_iso(d.get("commence_time")) != date_et:
                 continue
+
+            latest = None
+            if d.get("match_id") and d.get("side"):
+                latest = conn.execute(
+                    """
+                    SELECT *
+                    FROM ranked_candidates
+                    WHERE match_id = ? AND side = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (d.get("match_id"), d.get("side")),
+                ).fetchone()
+
+            current_view_mode = None
+            current_actionable = False
+            if latest:
+                latest_dict = dict(latest)
+                item = SimpleNamespace(**latest_dict)
+                current_view_mode, current_actionable = _classify_candidate(item, thresholds)
+                d["current_view_mode"] = current_view_mode
+                d["current_actionable"] = 1 if current_actionable else 0
+                d["current_snapshot_id"] = latest_dict.get("snapshot_id")
+                d["current_confidence"] = latest_dict.get("confidence")
+                d["current_ev_adj"] = latest_dict.get("ev_adj")
+                d["current_matchup_strength"] = latest_dict.get("matchup_strength")
+                d["current_market_value"] = latest_dict.get("market_value")
+                d["current_reliability"] = latest_dict.get("reliability")
+            else:
+                d["current_view_mode"] = None
+                d["current_actionable"] = 0
+                d["current_snapshot_id"] = None
+
             status_display = d.get("result") or "OPEN"
             status_note = None
             if status_display == "OPEN":
@@ -1057,9 +1096,19 @@ def create_app():
                         pass
             d["status_display"] = status_display
             d["status_note"] = status_note
-            out.append(d)
 
-        return jsonify({"date_et": date_et, "count": len(out), "rows": out})
+            if current_actionable:
+                out.append(d)
+            else:
+                demoted.append(d)
+
+        conn.close()
+        return jsonify({
+            "date_et": date_et,
+            "count": len(out),
+            "rows": out,
+            "demoted_count": len(demoted),
+        })
 
     @app.get("/api/strategy/audit")
     def api_strategy_audit():

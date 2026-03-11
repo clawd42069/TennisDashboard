@@ -42,8 +42,8 @@
   <div class="card">
     <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
       <div>
-        <h3 style="margin:0;">Daily actionables</h3>
-        <div class="muted">Today’s actionable results for the ET-day slate.</div>
+        <h3 style="margin:0;">Current live actionables</h3>
+        <div class="muted">Only bets that still qualify as actionable under the latest live classification.</div>
       </div>
       <button onclick="loadActionables()">Refresh</button>
     </div>
@@ -641,13 +641,13 @@ async function loadActionables(dateOverride=null){
   });
 
   if (!rows.length){
-    meta.textContent = 'No captured daily actionables yet.';
-    body.innerHTML = '<div class="muted">Nothing captured yet.</div>';
+    meta.textContent = `No current live actionables${j.demoted_count ? ` • ${j.demoted_count} prior picks are now downgraded` : ''}.`;
+    body.innerHTML = '<div class="muted">Nothing currently qualifies as actionable.</div>';
     setActionablesPolling(false);
     return;
   }
 
-  meta.textContent = `${j.date_et} • ${rows.length} captured actionables • ${pendingRows.length} still pending`;
+  meta.textContent = `${j.date_et} • ${rows.length} current live actionables • ${pendingRows.length} still pending${j.demoted_count ? ` • ${j.demoted_count} downgraded/filtered out` : ''}`;
   currentSlateSummary = Object.assign({}, currentSlateSummary || {}, { date_et: j.date_et, actionables: { total: rows.length, wins: rows.filter(r => (r.result || r.status_display) === 'WIN').length, losses: rows.filter(r => (r.result || r.status_display) === 'LOSS').length, open_n: pendingRows.length } });
   const wins = (currentSlateSummary.actionables || {}).wins || 0;
   const losses = (currentSlateSummary.actionables || {}).losses || 0;
@@ -669,8 +669,11 @@ async function loadActionables(dateOverride=null){
         </div>
         <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
           ${pill(`Price <strong>${americanOddsText(row.price_american || decToAmerican(row.price_decimal))}</strong>`)}
-          ${pill(`EV_adj <strong>${signed(row.ev_adj)}</strong>`)}
-          ${pill(`Conf <strong>${pct(row.confidence,0)}</strong>`)}
+          ${pill(`Live Matchup <strong>${row.current_matchup_strength !== undefined && row.current_matchup_strength !== null ? Math.round(row.current_matchup_strength) : '—'}</strong>`)}
+          ${pill(`Live Market <strong>${row.current_market_value !== undefined && row.current_market_value !== null ? Math.round(row.current_market_value) : '—'}</strong>`)}
+          ${pill(`Live Reliability <strong>${row.current_reliability !== undefined && row.current_reliability !== null ? Math.round(row.current_reliability) : '—'}</strong>`)}
+          ${pill(`Live EV_adj <strong>${signed(row.current_ev_adj ?? row.ev_adj)}</strong>`)}
+          ${pill(`Live Conf <strong>${pct(row.current_confidence ?? row.confidence,0)}</strong>`)}
         </div>
         ${row.status_note ? `<div class="muted" style="margin-top:8px;">${row.status_note}</div>` : ''}
       </div>
