@@ -23,6 +23,7 @@ from typing import Any
 
 import json
 import math
+import sqlite3
 
 from .modeling import implied_prob_from_decimal, ev_per_1u_risk, elo_to_p
 from .elo import ensure_atp_surface_elo, get_player_surface_elo
@@ -44,36 +45,45 @@ def get_mcp_style_profile(conn, player_name: str):
 def get_recent_profile(conn, player_id: int | None):
     if player_id is None:
         return None
-    return conn.execute(
-        "SELECT * FROM atp_recent_oppq_10 WHERE player_id = ?",
-        (player_id,),
-    ).fetchone()
+    try:
+        return conn.execute(
+            "SELECT * FROM atp_recent_oppq_10 WHERE player_id = ?",
+            (player_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
 
 
 def get_surface_split(conn, player_id: int | None, surface: str | None):
     if player_id is None or not surface:
         return None
-    return conn.execute(
-        "SELECT * FROM atp_surface_splits WHERE player_id = ? AND surface = ?",
-        (player_id, surface),
-    ).fetchone()
+    try:
+        return conn.execute(
+            "SELECT * FROM atp_surface_splits WHERE player_id = ? AND surface = ?",
+            (player_id, surface),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
 
 
 def get_head_to_head(conn, player_a_id: int | None, player_b_id: int | None):
     if player_a_id is None or player_b_id is None:
         return None
-    row = conn.execute(
-        """
-        SELECT
-          SUM(CASE WHEN winner_id = ? AND loser_id = ? THEN 1 ELSE 0 END) AS a_wins,
-          SUM(CASE WHEN winner_id = ? AND loser_id = ? THEN 1 ELSE 0 END) AS b_wins,
-          COUNT(*) AS matches
-        FROM ta_matches
-        WHERE (winner_id = ? AND loser_id = ?) OR (winner_id = ? AND loser_id = ?)
-        """,
-        (player_a_id, player_b_id, player_b_id, player_a_id, player_a_id, player_b_id, player_b_id, player_a_id),
-    ).fetchone()
-    return row
+    try:
+        row = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN winner_id = ? AND loser_id = ? THEN 1 ELSE 0 END) AS a_wins,
+              SUM(CASE WHEN winner_id = ? AND loser_id = ? THEN 1 ELSE 0 END) AS b_wins,
+              COUNT(*) AS matches
+            FROM ta_matches
+            WHERE (winner_id = ? AND loser_id = ?) OR (winner_id = ? AND loser_id = ?)
+            """,
+            (player_a_id, player_b_id, player_b_id, player_a_id, player_a_id, player_b_id, player_b_id, player_a_id),
+        ).fetchone()
+        return row
+    except sqlite3.OperationalError:
+        return None
 
 
 # ---------- Small math helpers ----------
@@ -256,7 +266,11 @@ def generate_ml_candidates(conn, events: list[dict[str, Any]], surface: str | No
     - injury/uncertainty proxy (neutral until data exists)
     - data completeness
     """
-    ensure_atp_surface_elo(conn)
+    try:
+        ensure_atp_surface_elo(conn)
+    except sqlite3.OperationalError:
+        # Fresh deploy before historical bootstrap: run market-first fallback instead of crashing.
+        pass
 
     out: list[Candidate] = []
     for e in events:

@@ -1656,13 +1656,15 @@ def create_app():
     def player_id_from_name(conn, name: str | None):
         if not name:
             return None
-        # Exact match first
-        row = conn.execute(
-            "SELECT player_id FROM ta_players WHERE (first_name || ' ' || last_name) = ? LIMIT 1",
-            (name,),
-        ).fetchone()
-        if row:
-            return row["player_id"]
+        try:
+            row = conn.execute(
+                "SELECT player_id FROM ta_players WHERE (first_name || ' ' || last_name) = ? LIMIT 1",
+                (name,),
+            ).fetchone()
+            if row:
+                return row["player_id"]
+        except Exception:
+            return None
         return None
 
     @app.get("/api/odds")
