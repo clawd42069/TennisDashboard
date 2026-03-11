@@ -234,6 +234,8 @@ function decToAmerican(dec){
 
 function candidateCard(c, compact=false, section='debug'){
   const reasons = (c.reasons || []).map(r => `<li>${r}</li>`).join('');
+  const axisNotes = c.axis_notes || {};
+  const component = c.component_scores || {};
   const drill = [
     ['Candidate ID', c.id ?? '—'],
     ['Price', americanOddsText(c.price_american || decToAmerican(c.price_decimal))],
@@ -246,6 +248,27 @@ function candidateCard(c, compact=false, section='debug'){
     ['Book', c.book || '—'],
     ['Start', fmtLocal(c.commence_time)]
   ].map(([k,v]) => `<div><span class="muted">${k}:</span> <strong>${v}</strong></div>`).join('');
+
+  const matchupBreakdown = [
+    ['Player quality', component.player_quality],
+    ['Surface strength', component.surface_strength],
+    ['Recent form', component.recent_form],
+    ['Serve/return', component.serve_return_profile],
+    ['Style interaction', component.style_interaction],
+  ].map(([k,v]) => `<li>${k}: <strong>${v ?? '—'}</strong></li>`).join('');
+
+  const marketBreakdown = [
+    ['Open/current', component.open_close_comparison],
+    ['Fair vs implied', component.implied_vs_fair_probability],
+    ['Price bucket', component.price_bucket_viability],
+  ].map(([k,v]) => `<li>${k}: <strong>${v ?? '—'}</strong></li>`).join('');
+
+  const reliabilityBreakdown = [
+    ['Sample size', component.sample_size],
+    ['Calibration', component.calibration],
+    ['Injury/uncertainty', component.injury_uncertainty],
+    ['Data completeness', component.data_completeness],
+  ].map(([k,v]) => `<li>${k}: <strong>${v ?? '—'}</strong></li>`).join('');
 
   const stage = stageInfo(c);
   return `
@@ -264,7 +287,9 @@ function candidateCard(c, compact=false, section='debug'){
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         ${c.selection_tier ? pill(`Tier <strong>${c.selection_tier}</strong>`) : ''}
         ${pill(`Price <strong>${americanOddsText(c.price_american || decToAmerican(c.price_decimal))}</strong>`)}
-        ${pill(`p0 <strong>${num(c.p0)}</strong>`)}
+        ${pill(`Matchup <strong>${c.matchup_strength !== undefined && c.matchup_strength !== null ? Math.round(c.matchup_strength) : '—'}</strong>`)}
+        ${pill(`Market <strong>${c.market_value !== undefined && c.market_value !== null ? Math.round(c.market_value) : '—'}</strong>`)}
+        ${pill(`Reliability <strong>${c.reliability !== undefined && c.reliability !== null ? Math.round(c.reliability) : '—'}</strong>`)}
         ${pill(`p <strong>${num(c.p_final)}</strong>`)}
         ${pill(`q <strong>${num(c.q_implied)}</strong>`)}
         ${pill(`EV <strong>${signed(c.ev)}</strong>`)}
@@ -281,6 +306,27 @@ function candidateCard(c, compact=false, section='debug'){
       <details style="margin-top:10px;">
         <summary style="cursor:pointer;">Why the model likes it</summary>
         <ul class="muted" style="margin:10px 0 0 18px;">${reasons || '<li>No reasons stored.</li>'}</ul>
+      </details>
+
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer;">Three-axis breakdown</summary>
+        <div class="grid2 muted" style="margin-top:10px; gap:12px 18px;">
+          <div>
+            <strong>Matchup Strength</strong>
+            <ul style="margin:8px 0 0 18px;">${matchupBreakdown}</ul>
+            <ul style="margin:8px 0 0 18px;">${(axisNotes.matchup_strength || []).map(r => `<li>${r}</li>`).join('')}</ul>
+          </div>
+          <div>
+            <strong>Market Value</strong>
+            <ul style="margin:8px 0 0 18px;">${marketBreakdown}</ul>
+            <ul style="margin:8px 0 0 18px;">${(axisNotes.market_value || []).map(r => `<li>${r}</li>`).join('')}</ul>
+          </div>
+          <div>
+            <strong>Reliability</strong>
+            <ul style="margin:8px 0 0 18px;">${reliabilityBreakdown}</ul>
+            <ul style="margin:8px 0 0 18px;">${(axisNotes.reliability || []).map(r => `<li>${r}</li>`).join('')}</ul>
+          </div>
+        </div>
       </details>
 
       <details style="margin-top:8px;">

@@ -13,7 +13,7 @@
   <div class="card" style="margin:0;">
     <div class="muted">Recent actionables</div>
     <div style="font-size:24px; font-weight:800;">{{ audit.latest_actionables.n or 0 }}</div>
-    <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }}</div>
+    <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Matchup {{ audit.latest_actionables.avg_matchup_strength or '—' }} • Market {{ audit.latest_actionables.avg_market_value or '—' }} • Reliability {{ audit.latest_actionables.avg_reliability or '—' }}</div>
   </div>
   <div class="card" style="margin:0;">
     <div class="muted">Settled actionables</div>
@@ -178,12 +178,12 @@
     <div class="card" style="margin:0;">
       <div class="muted">Recent actionable rows</div>
       <div style="font-size:24px; font-weight:800;">{{ audit.latest_actionables.n or 0 }}</div>
-      <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Max odds {{ audit.latest_actionables.max_odds or '—' }}</div>
+      <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Max odds {{ audit.latest_actionables.max_odds or '—' }} • Matchup {{ audit.latest_actionables.avg_matchup_strength or '—' }}</div>
     </div>
     <div class="card" style="margin:0;">
       <div class="muted">Recent watchlist rows</div>
       <div style="font-size:24px; font-weight:800;">{{ audit.latest_watchlist.n or 0 }}</div>
-      <div class="muted">Avg odds {{ audit.latest_watchlist.avg_odds or '—' }} • Avg conf {{ audit.latest_watchlist.avg_conf or '—' }}</div>
+      <div class="muted">Avg odds {{ audit.latest_watchlist.avg_odds or '—' }} • Avg conf {{ audit.latest_watchlist.avg_conf or '—' }} • Reliability {{ audit.latest_watchlist.avg_reliability or '—' }}</div>
     </div>
     <div class="card" style="margin:0;">
       <div class="muted">Settled actionables</div>

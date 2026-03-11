@@ -94,6 +94,9 @@ def migrate():
           ev REAL,                         -- expected value per 1u risk
           confidence REAL,                 -- 0..1
           ev_adj REAL,                     -- ev*confidence
+          matchup_strength REAL,           -- 0..100
+          market_value REAL,               -- 0..100
+          reliability REAL,                -- 0..100
 
           delta_elo_surface REAL,
           delta_sr REAL,
@@ -368,6 +371,9 @@ def migrate():
 
     # Forward-compatible ALTERs for existing DBs
     for stmt in [
+        "ALTER TABLE ranked_candidates ADD COLUMN matchup_strength REAL;",
+        "ALTER TABLE ranked_candidates ADD COLUMN market_value REAL;",
+        "ALTER TABLE ranked_candidates ADD COLUMN reliability REAL;",
         "ALTER TABLE paper_bets ADD COLUMN match_label TEXT;",
         "ALTER TABLE paper_bets ADD COLUMN odds_american INTEGER;",
         "ALTER TABLE paper_bets ADD COLUMN pnl_units REAL;",

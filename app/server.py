@@ -822,10 +822,25 @@ def create_app():
         ).fetchall()
         conn.close()
 
+        candidates = []
+        for r in rows:
+            d = dict(r)
+            if d.get("matchup_flags_json"):
+                try:
+                    payload = json.loads(d.get("matchup_flags_json") or "{}")
+                    d["component_scores"] = payload.get("component_scores") or {}
+                    d["axis_notes"] = payload.get("axis_notes") or {}
+                    if not d.get("reasons"):
+                        d["reasons"] = payload.get("reasons") or []
+                except Exception:
+                    d["component_scores"] = {}
+                    d["axis_notes"] = {}
+            candidates.append(d)
+
         return jsonify({
             "snapshot": dict(snap),
             "count": len(rows),
-            "candidates": [dict(r) for r in rows],
+            "candidates": candidates,
         })
 
     @app.get("/api/matchups/daily")
@@ -881,17 +896,30 @@ def create_app():
 
         def row_to_dict(r):
             d = dict(r)
+            component_scores = {}
+            axis_notes = {}
+            if d.get("matchup_flags_json"):
+                try:
+                    payload = json.loads(d.get("matchup_flags_json") or "{}")
+                    component_scores = payload.get("component_scores") or {}
+                    axis_notes = payload.get("axis_notes") or {}
+                except Exception:
+                    component_scores = {}
+                    axis_notes = {}
+            d["component_scores"] = component_scores
+            d["axis_notes"] = axis_notes
             item = SimpleNamespace(**d)
             live_view_mode, is_actionable = _classify_candidate(item, thresholds)
             tier, units = _assign_tier_and_units(item, "actionable" if is_actionable else live_view_mode, thresholds)
+            strategy_meta = _build_strategy_reasoning(item, "actionable" if is_actionable else live_view_mode, thresholds)
             d["actionable"] = 1 if is_actionable else 0
             d["view_mode"] = live_view_mode
             d["selection_tier"] = tier
             d["units_suggested"] = units if is_actionable else None
-            d["strategy_summary"] = d.get("strategy_summary") or None
-            d["strategy_why"] = d.get("strategy_why") or []
-            d["strategy_risk"] = d.get("strategy_risk") or []
-            d["alternative_market"] = d.get("alternative_market") or None
+            d["strategy_summary"] = strategy_meta.get("summary")
+            d["strategy_why"] = strategy_meta.get("why") or []
+            d["strategy_risk"] = strategy_meta.get("risk") or []
+            d["alternative_market"] = strategy_meta.get("alternative_market") or None
             d["reasons"] = d.get("reasons") or []
             return d
 
@@ -1162,11 +1190,17 @@ def create_app():
             "actionable_min_ev": float(os.getenv("ACTIONABLE_MIN_EV") or 0.03),
             "actionable_min_ev_adj": float(os.getenv("ACTIONABLE_MIN_EV_ADJ") or 0.03),
             "actionable_max_edge": float(os.getenv("ACTIONABLE_MAX_EDGE") or 0.10),
+            "actionable_min_matchup": float(os.getenv("ACTIONABLE_MIN_MATCHUP") or 60.0),
+            "actionable_min_market_value": float(os.getenv("ACTIONABLE_MIN_MARKET_VALUE") or 54.0),
+            "actionable_min_reliability": float(os.getenv("ACTIONABLE_MIN_RELIABILITY") or 58.0),
             "watchlist_max_odds": float(os.getenv("WATCHLIST_MAX_ODDS_DEC") or 6.0),
             "watchlist_min_conf": float(os.getenv("WATCHLIST_MIN_CONF") or 0.60),
             "watchlist_min_ev": float(os.getenv("WATCHLIST_MIN_EV") or 0.02),
             "watchlist_min_ev_adj": float(os.getenv("WATCHLIST_MIN_EV_ADJ") or 0.02),
             "watchlist_max_edge": float(os.getenv("WATCHLIST_MAX_EDGE") or 0.10),
+            "watchlist_min_matchup": float(os.getenv("WATCHLIST_MIN_MATCHUP") or 54.0),
+            "watchlist_min_market_value": float(os.getenv("WATCHLIST_MIN_MARKET_VALUE") or 48.0),
+            "watchlist_min_reliability": float(os.getenv("WATCHLIST_MIN_RELIABILITY") or 52.0),
             "heavy_favorite_max_price": float(os.getenv("HEAVY_FAVORITE_MAX_PRICE_DEC") or 1.20),
             "heavy_favorite_min_conf": float(os.getenv("HEAVY_FAVORITE_MIN_CONF") or 0.74),
             "heavy_favorite_min_ev": float(os.getenv("HEAVY_FAVORITE_MIN_EV") or 0.08),
@@ -1244,29 +1278,60 @@ def create_app():
         price_am = dec_to_american(getattr(c, "price_decimal", None))
         tier, units = _assign_tier_and_units(c, view_mode, thresholds)
         model_edge = ((getattr(c, "p_final", 0.0) or 0.0) - (getattr(c, "q_implied", 0.0) or 0.0))
-        summary = f"Model makes {c.side} about {((c.p_final or 0)*100):.1f}% vs market {((c.q_implied or 0)*100):.1f}% at {price_am if price_am is not None else '—'} — estimated edge {model_edge*100:+.1f} pts."
+        matchup_strength = float(getattr(c, "matchup_strength", 0.0) or 0.0)
+        market_value = float(getattr(c, "market_value", 0.0) or 0.0)
+        reliability = float(getattr(c, "reliability", 0.0) or 0.0)
+        component_scores = getattr(c, "component_scores", None) or {}
+
+        summary = (
+            f"{c.side} grades as Matchup {matchup_strength:.0f}/100, Market {market_value:.0f}/100, "
+            f"Reliability {reliability:.0f}/100. Model makes {((c.p_final or 0)*100):.1f}% vs market {((c.q_implied or 0)*100):.1f}% "
+            f"at {price_am if price_am is not None else '—'} — edge {model_edge*100:+.1f} pts."
+        )
+
         why = []
         risk = []
+
         if view_mode == "actionable":
-            why.append(f"{tier} actionable — suggested size {units:.1f}u based on EV_adj {c.ev_adj:+.3f} and confidence {(c.confidence or 0)*100:.0f}%.")
+            why.append(f"{tier} actionable — {units:.1f}u suggested because all three axes cleared the live thresholds.")
         elif view_mode == "watchlist":
-            why.append("Watchlist only — interesting edge, but not clean enough for true actionable status yet.")
+            why.append("Watchlist only — some edge exists, but one or more axes are not strong enough for full actionable status.")
         else:
-            why.append("Debug only — outside current strategy thresholds.")
+            why.append("Debug only — current framework does not trust the full matchup/market/reliability stack enough yet.")
+
+        why.append(
+            f"Matchup stack: player quality {component_scores.get('player_quality', '—')}, surface {component_scores.get('surface_strength', '—')}, "
+            f"recent form {component_scores.get('recent_form', '—')}, serve/return {component_scores.get('serve_return_profile', '—')}, style {component_scores.get('style_interaction', '—')}."
+        )
+        why.append(
+            f"Market stack: movement {component_scores.get('open_close_comparison', '—')}, fair-vs-implied {component_scores.get('implied_vs_fair_probability', '—')}, price bucket {component_scores.get('price_bucket_viability', '—')}."
+        )
+        why.append(
+            f"Reliability stack: sample {component_scores.get('sample_size', '—')}, calibration {component_scores.get('calibration', '—')}, data completeness {component_scores.get('data_completeness', '—')}."
+        )
+
         if _is_heavy_favorite_ml(c, thresholds):
-            risk.append("Heavy-favorite ML tax — expensive moneyline needs stronger justification than a normal ML.")
+            risk.append("Heavy-favorite ML tax — expensive moneyline needs stronger matchup and reliability support than a normal ML.")
             if alt_market:
                 why.append(f"Alternative market to consider: {alt_market['market'].upper()} {alt_market.get('line')} on {alt_market.get('name')} at {alt_market.get('price_american')} ({alt_market.get('book')}).")
             else:
                 why.append("Alternative market check: prefer same-player spread / alt line if available instead of laying a heavy ML.")
         elif (c.price_decimal or 99) >= 3.5:
             risk.append("Dog/longer price — edge is more fragile and should be sized carefully.")
+
         if (c.price_decimal or 99) > thresholds["watchlist_max_odds"]:
             risk.append("Longshot filter — current strategy no longer wants very high-priced dogs on the watchlist.")
         if (c.confidence or 0) < 0.70:
             risk.append("Confidence is decent but not elite — do not treat this like a top-tier play.")
+        if matchup_strength < thresholds["actionable_min_matchup"]:
+            risk.append("Matchup case is not strong enough yet — the tennis read is weaker than we want.")
+        if market_value < thresholds["actionable_min_market_value"]:
+            risk.append("Price case is thin — the market is not clearly underpricing the matchup enough.")
+        if reliability < thresholds["actionable_min_reliability"]:
+            risk.append("Reliability is middling — sample / calibration / completeness still need more trust.")
         if abs(model_edge) >= thresholds["actionable_max_edge"] * 0.8:
             risk.append("Model is disagreeing with market materially — upside is real, but calibration risk is higher.")
+
         return {
             "tier": tier,
             "units": units,
@@ -1281,6 +1346,9 @@ def create_app():
             return "debug", False
 
         model_edge = abs((c.p_final or 0.0) - (c.q_implied or 0.0))
+        matchup_strength = float(getattr(c, "matchup_strength", 0.0) or 0.0)
+        market_value = float(getattr(c, "market_value", 0.0) or 0.0)
+        reliability = float(getattr(c, "reliability", 0.0) or 0.0)
 
         actionable = (
             c.price_decimal <= thresholds["actionable_max_odds"]
@@ -1288,6 +1356,9 @@ def create_app():
             and c.ev >= thresholds["actionable_min_ev"]
             and c.ev_adj >= thresholds["actionable_min_ev_adj"]
             and model_edge <= thresholds["actionable_max_edge"]
+            and matchup_strength >= thresholds["actionable_min_matchup"]
+            and market_value >= thresholds["actionable_min_market_value"]
+            and reliability >= thresholds["actionable_min_reliability"]
         )
         if actionable:
             if _is_heavy_favorite_ml(c, thresholds):
@@ -1295,6 +1366,8 @@ def create_app():
                     (c.confidence or 0.0) >= thresholds["heavy_favorite_min_conf"]
                     and c.ev >= thresholds["heavy_favorite_min_ev"]
                     and c.ev_adj >= thresholds["heavy_favorite_min_ev_adj"]
+                    and matchup_strength >= thresholds["actionable_min_matchup"] + 4.0
+                    and reliability >= thresholds["actionable_min_reliability"] + 4.0
                 )
                 if heavy_ok:
                     return "actionable", True
@@ -1307,6 +1380,9 @@ def create_app():
             and c.ev >= thresholds["watchlist_min_ev"]
             and c.ev_adj >= thresholds["watchlist_min_ev_adj"]
             and model_edge <= thresholds["watchlist_max_edge"]
+            and matchup_strength >= thresholds["watchlist_min_matchup"]
+            and market_value >= thresholds["watchlist_min_market_value"]
+            and reliability >= thresholds["watchlist_min_reliability"]
         )
         if watchlist:
             return "watchlist", False
@@ -1342,7 +1418,8 @@ def create_app():
         placeholders = ",".join("?" for _ in latest_ids)
         rows = conn.execute(
             f"""
-            SELECT id, snapshot_id, market_type, price_decimal, price_american, confidence, ev, ev_adj, p_final, q_implied
+            SELECT id, snapshot_id, market_type, price_decimal, price_american, confidence, ev, ev_adj, p_final, q_implied,
+                   matchup_strength, market_value, reliability
             FROM ranked_candidates
             WHERE snapshot_id IN ({placeholders})
             """,
@@ -1366,11 +1443,24 @@ def create_app():
 
         def summarize(items):
             if not items:
-                return {"n": 0, "avg_odds": None, "max_odds": None, "avg_conf": None, "avg_ev": None, "avg_ev_adj": None}
+                return {
+                    "n": 0,
+                    "avg_odds": None,
+                    "max_odds": None,
+                    "avg_conf": None,
+                    "avg_ev": None,
+                    "avg_ev_adj": None,
+                    "avg_matchup_strength": None,
+                    "avg_market_value": None,
+                    "avg_reliability": None,
+                }
             odds = [x["price_decimal"] for x in items if x.get("price_decimal") is not None]
             confs = [x["confidence"] for x in items if x.get("confidence") is not None]
             evs = [x["ev"] for x in items if x.get("ev") is not None]
             ev_adjs = [x["ev_adj"] for x in items if x.get("ev_adj") is not None]
+            matchup = [x["matchup_strength"] for x in items if x.get("matchup_strength") is not None]
+            market_vals = [x["market_value"] for x in items if x.get("market_value") is not None]
+            reliab = [x["reliability"] for x in items if x.get("reliability") is not None]
             return {
                 "n": len(items),
                 "avg_odds": round(sum(odds) / len(odds), 2) if odds else None,
@@ -1378,6 +1468,9 @@ def create_app():
                 "avg_conf": round(sum(confs) / len(confs), 3) if confs else None,
                 "avg_ev": round(sum(evs) / len(evs), 3) if evs else None,
                 "avg_ev_adj": round(sum(ev_adjs) / len(ev_adjs), 3) if ev_adjs else None,
+                "avg_matchup_strength": round(sum(matchup) / len(matchup), 1) if matchup else None,
+                "avg_market_value": round(sum(market_vals) / len(market_vals), 1) if market_vals else None,
+                "avg_reliability": round(sum(reliab) / len(reliab), 1) if reliab else None,
             }
 
         def safe_win_rate(wins, losses):
@@ -1694,6 +1787,11 @@ def create_app():
                 "ev": c.ev,
                 "confidence": c.confidence,
                 "ev_adj": c.ev_adj,
+                "matchup_strength": getattr(c, "matchup_strength", None),
+                "market_value": getattr(c, "market_value", None),
+                "reliability": getattr(c, "reliability", None),
+                "component_scores": getattr(c, "component_scores", {}),
+                "axis_notes": getattr(c, "axis_notes", {}),
                 "reasons": c.reasons,
                 "selection_tier": getattr(c, "selection_tier", None),
                 "units_suggested": getattr(c, "units_suggested", None),
@@ -1713,10 +1811,11 @@ def create_app():
                   match_id, commence_time, tournament, surface, player_a, player_b,
                   market_type, side, line, price_decimal, price_american, book,
                   p0, p_final, q_implied, ev, confidence, ev_adj,
+                  matchup_strength, market_value, reliability,
                   delta_elo_surface, delta_sr, delta_recency, delta_z_raw, delta_z_capped,
                   matchup_flags_json,
                   view_mode, actionable, units_suggested
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     snapshot_id,
@@ -1739,12 +1838,19 @@ def create_app():
                     c.ev,
                     c.confidence,
                     c.ev_adj,
+                    getattr(c, "matchup_strength", None),
+                    getattr(c, "market_value", None),
+                    getattr(c, "reliability", None),
                     None,
                     None,
                     None,
                     None,
                     None,
-                    None,
+                    json.dumps({
+                        "component_scores": getattr(c, "component_scores", {}),
+                        "axis_notes": getattr(c, "axis_notes", {}),
+                        "reasons": getattr(c, "reasons", []),
+                    }),
                     view_mode,
                     1 if is_actionable else 0,
                     getattr(c, "units_suggested", None),
