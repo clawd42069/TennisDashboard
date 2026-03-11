@@ -865,7 +865,17 @@ def create_app():
                     response, status = resp
                     return response, status
                 data = resp.get_json()
-                summary = _match_status_counts(data.get("outputs") or [])
+                outputs_for_date = [
+                    row for row in (data.get("outputs") or [])
+                    if _et_date_from_iso((row or {}).get("commence_time")) == date_et
+                ]
+                data["outputs"] = outputs_for_date
+                for key in ["candidates_debug", "candidates_watchlist", "candidates_actionable"]:
+                    data[key] = [
+                        row for row in (data.get(key) or [])
+                        if _et_date_from_iso((row or {}).get("commence_time")) == date_et
+                    ]
+                summary = _match_status_counts(outputs_for_date)
                 summary["date_et"] = date_et
                 conn = connect()
                 summary["actionables"] = _daily_actionable_stats(conn, date_et)
@@ -935,7 +945,8 @@ def create_app():
             except Exception:
                 pass
 
-        all_dicts = [row_to_dict(r) for r in rows_all]
+        payloads = [p for p in payloads if _et_date_from_iso(p.get("commence_time")) == date_et]
+        all_dicts = [row_to_dict(r) for r in rows_all if _et_date_from_iso(dict(r).get("commence_time")) == date_et]
         rows_actionable = [r for r in all_dicts if r.get("actionable") == 1][:100]
         rows_watchlist = [r for r in all_dicts if r.get("view_mode") == "watchlist"][:10]
 
