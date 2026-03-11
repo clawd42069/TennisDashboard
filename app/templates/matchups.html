@@ -42,13 +42,14 @@
   <div class="card">
     <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
       <div>
-        <h3 style="margin:0;">Current live actionables</h3>
-        <div class="muted">Only bets that still qualify as actionable under the latest live classification.</div>
+        <h3 style="margin:0;">Live bet state audit</h3>
+        <div class="muted">Clear separation between current actionables and bets that have been downgraded since earlier captures.</div>
       </div>
       <button onclick="loadActionables()">Refresh</button>
     </div>
     <div id="actionablesMeta" class="muted" style="margin-top:8px;"></div>
     <div id="actionablesAudit" style="margin-top:10px;"></div>
+    <div id="demotedAudit" style="margin-top:12px;"></div>
   </div>
 </div>
 
@@ -629,6 +630,7 @@ function setActionablesPolling(enabled){
 async function loadActionables(dateOverride=null){
   const meta = document.getElementById('actionablesMeta');
   const body = document.getElementById('actionablesAudit');
+  const demotedBody = document.getElementById('demotedAudit');
   meta.textContent = 'Loading…';
   const date = dateOverride || currentEtDate || currentSelectedDate();
   const r = await fetch(`/api/actionables?date=${encodeURIComponent(date)}`);
@@ -643,6 +645,7 @@ async function loadActionables(dateOverride=null){
   if (!rows.length){
     meta.textContent = `No current live actionables${j.demoted_count ? ` • ${j.demoted_count} prior picks are now downgraded` : ''}.`;
     body.innerHTML = '<div class="muted">Nothing currently qualifies as actionable.</div>';
+    demotedBody.innerHTML = renderDemotedSection(j.demoted_rows || []);
     setActionablesPolling(false);
     return;
   }
@@ -655,30 +658,68 @@ async function loadActionables(dateOverride=null){
   renderSummary();
   setActionablesPolling(pendingRows.length > 0);
 
-  body.innerHTML = rows.slice(0,6).map(row => {
-    const status = row.status_display || row.result || 'OPEN';
-    const resClass = status === 'WIN' ? 'win' : (status === 'LOSS' ? 'loss' : (status === 'CLOSED' ? 'warn' : 'neutral'));
-    return `
-      <div class="card" style="margin:10px 0 0 0;">
+  body.innerHTML = `
+    <div style="margin:0 0 8px 0; font-weight:700;">Actionable now</div>
+    ${rows.slice(0,6).map(row => {
+      const status = row.status_display || row.result || 'OPEN';
+      const resClass = status === 'WIN' ? 'win' : (status === 'LOSS' ? 'loss' : (status === 'CLOSED' ? 'warn' : 'neutral'));
+      return `
+        <div class="card" style="margin:10px 0 0 0; border-left:4px solid #10b981;">
+          <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+            <div>
+              <strong>${row.side}</strong> <span class="muted">in</span> ${row.player_a} vs ${row.player_b}
+              <div class="muted" style="margin-top:4px;">${fmtLocal(row.commence_time)} • ${row.book || '—'}</div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              ${pill('<strong>ACTIONABLE</strong>')}
+              <div class="${resClass}">${status}</div>
+            </div>
+          </div>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            ${pill(`Price <strong>${americanOddsText(row.price_american || decToAmerican(row.price_decimal))}</strong>`)}
+            ${pill(`Live Matchup <strong>${row.current_matchup_strength !== undefined && row.current_matchup_strength !== null ? Math.round(row.current_matchup_strength) : '—'}</strong>`)}
+            ${pill(`Live Market <strong>${row.current_market_value !== undefined && row.current_market_value !== null ? Math.round(row.current_market_value) : '—'}</strong>`)}
+            ${pill(`Live Reliability <strong>${row.current_reliability !== undefined && row.current_reliability !== null ? Math.round(row.current_reliability) : '—'}</strong>`)}
+            ${pill(`Live EV_adj <strong>${signed(row.current_ev_adj ?? row.ev_adj)}</strong>`)}
+            ${pill(`Live Conf <strong>${pct(row.current_confidence ?? row.confidence,0)}</strong>`)}
+          </div>
+          ${row.status_note ? `<div class="muted" style="margin-top:8px;">${row.status_note}</div>` : ''}
+        </div>
+      `;
+    }).join('')}
+  `;
+  demotedBody.innerHTML = renderDemotedSection(j.demoted_rows || []);
+}
+
+function renderDemotedSection(rows){
+  if (!rows.length){
+    return '';
+  }
+  return `
+    <div style="margin:0 0 8px 0; font-weight:700;">Downgraded / filtered out</div>
+    <div class="muted" style="margin-bottom:8px;">These bets may have been captured earlier, but they no longer qualify as live actionables under the current model state.</div>
+    ${rows.slice(0,6).map(row => `
+      <div class="card" style="margin:10px 0 0 0; border-left:4px solid #f59e0b;">
         <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
           <div>
             <strong>${row.side}</strong> <span class="muted">in</span> ${row.player_a} vs ${row.player_b}
             <div class="muted" style="margin-top:4px;">${fmtLocal(row.commence_time)} • ${row.book || '—'}</div>
           </div>
-          <div class="${resClass}">${status}</div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            ${pill('<strong>DOWNGRADED</strong>')}
+            ${row.current_view_mode ? pill(`Now <strong>${String(row.current_view_mode).toUpperCase()}</strong>`) : pill('<strong>NOT LIVE</strong>')}
+          </div>
         </div>
         <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-          ${pill(`Price <strong>${americanOddsText(row.price_american || decToAmerican(row.price_decimal))}</strong>`)}
           ${pill(`Live Matchup <strong>${row.current_matchup_strength !== undefined && row.current_matchup_strength !== null ? Math.round(row.current_matchup_strength) : '—'}</strong>`)}
           ${pill(`Live Market <strong>${row.current_market_value !== undefined && row.current_market_value !== null ? Math.round(row.current_market_value) : '—'}</strong>`)}
           ${pill(`Live Reliability <strong>${row.current_reliability !== undefined && row.current_reliability !== null ? Math.round(row.current_reliability) : '—'}</strong>`)}
           ${pill(`Live EV_adj <strong>${signed(row.current_ev_adj ?? row.ev_adj)}</strong>`)}
           ${pill(`Live Conf <strong>${pct(row.current_confidence ?? row.confidence,0)}</strong>`)}
         </div>
-        ${row.status_note ? `<div class="muted" style="margin-top:8px;">${row.status_note}</div>` : ''}
       </div>
-    `;
-  }).join('');
+    `).join('')}
+  `;
 }
 
 async function loadClv(candidateId){

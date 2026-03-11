@@ -1108,6 +1108,7 @@ def create_app():
             "count": len(out),
             "rows": out,
             "demoted_count": len(demoted),
+            "demoted_rows": demoted[:10],
         })
 
     @app.get("/api/strategy/audit")
