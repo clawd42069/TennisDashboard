@@ -55,7 +55,7 @@
 
 <div class="card">
   <h3 style="margin-top:0;">Add bet</h3>
-  <div class="muted">Tip: first fetch odds in Matchup Report so this dropdown is populated.</div>
+  <div class="muted">Tip: this dropdown now includes recent prior-day matches too, not just today’s live slate.</div>
   <form method="post" action="/paper/add" style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top:10px;">
     <select id="matchSelect" name="match_id">
       <option value="">Match (optional)</option>
@@ -122,7 +122,7 @@ async function loadCandidates(){
   candidates.forEach(m => {
     const opt = document.createElement('option');
     opt.value = m.match_id;
-    opt.textContent = `${fmtLocal(m.commence_time)} — ${m.away_team} vs ${m.home_team}`;
+    opt.textContent = `${m.start_date_et || ''} • ${fmtLocal(m.commence_time)} — ${m.away_team} vs ${m.home_team}`;
     opt.dataset.tournament = m.tournament || '';
     ms.appendChild(opt);
   });

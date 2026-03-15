@@ -725,26 +725,48 @@ def create_app():
 
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
-        """Return a compact list of upcoming/live matches from most recent odds snapshot(s).
+        """Return a compact list of recent + upcoming matches for Bet Tracker dropdowns.
 
-        Used to populate dropdowns on the Paper Tracker.
+        Used to populate the Paper Tracker with the last few ET days of matches,
+        not just the latest live snapshot, so prior-day bets can be entered.
         """
+        recent_days = int(request.args.get("days") or 5)
+        recent_days = max(2, min(10, recent_days))
+
         conn = connect()
-        row = conn.execute("SELECT ts FROM odds_snapshots ORDER BY ts DESC LIMIT 1").fetchone()
-        if not row:
-            conn.close()
-            return jsonify({"matches": [], "note": "No odds snapshots yet. Go to Matchup Report and Fetch odds first."})
-        ts = row["ts"]
         rows = conn.execute(
-            "SELECT payload_json FROM odds_snapshots WHERE ts = ? LIMIT 2000",
-            (ts,),
+            "SELECT ts, payload_json FROM odds_snapshots ORDER BY ts DESC LIMIT 12000"
         ).fetchall()
         conn.close()
+        if not rows:
+            return jsonify({"matches": [], "note": "No odds snapshots yet. Go to Matchup Report and Fetch odds first."})
 
-        matches = []
+        today_et = datetime.now(ET).date()
+        lower_date = today_et - timedelta(days=recent_days - 1)
+        upper_date = today_et + timedelta(days=2)
+
+        by_match = {}
+        latest_ts = None
         for r in rows:
-            m = json.loads(r["payload_json"])
+            try:
+                m = json.loads(r["payload_json"])
+            except Exception:
+                continue
             mid = normalize_match(m)
+            commence_time = m.get("commence_time")
+            date_et = _et_date_from_iso(commence_time)
+            if not date_et:
+                continue
+            try:
+                d_et = datetime.strptime(date_et, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if not (lower_date <= d_et <= upper_date):
+                continue
+            # Keep the latest snapshot per match_id.
+            if mid in by_match:
+                continue
+
             bm = (m.get("bookmakers") or [])
             first = bm[0] if bm else None
             h2h = None
@@ -753,23 +775,32 @@ def create_app():
                     if market.get("key") == "h2h":
                         h2h = market
                         break
-            # grab moneyline prices for both outcomes (decimal)
             outcomes = []
             if h2h:
                 for o in h2h.get("outcomes") or []:
                     outcomes.append({"name": o.get("name"), "odds_decimal": o.get("price")})
-            matches.append({
+
+            by_match[mid] = {
                 "match_id": mid,
                 "sport_key": m.get("sport_key"),
                 "tournament": m.get("sport_title"),
-                "commence_time": m.get("commence_time"),
+                "commence_time": commence_time,
+                "start_date_et": date_et,
                 "home_team": m.get("home_team"),
                 "away_team": m.get("away_team"),
                 "bookmaker": first.get("title") if first else None,
                 "outcomes": outcomes,
-            })
+            }
+            if latest_ts is None:
+                latest_ts = r["ts"]
 
-        return jsonify({"ts": ts, "matches": matches})
+        matches = sorted(
+            by_match.values(),
+            key=lambda x: (DateTime_from_iso := datetime.fromisoformat((x.get("commence_time") or "").replace("Z", "+00:00"))) if x.get("commence_time") else datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+
+        return jsonify({"ts": latest_ts, "matches": matches, "days": recent_days})
 
     @app.get("/api/candidates/latest")
     def api_candidates_latest():
