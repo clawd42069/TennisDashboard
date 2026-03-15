@@ -734,6 +734,14 @@ def create_app():
         recent_days = max(2, min(10, recent_days))
 
         conn = connect()
+        catalog_rows = conn.execute(
+            """
+            SELECT match_id, sport_key, tournament, commence_time, start_date_et, player_a, player_b, bookmaker, outcomes_json, updated_ts
+            FROM recent_match_catalog
+            ORDER BY COALESCE(commence_time, updated_ts) DESC
+            LIMIT 5000
+            """
+        ).fetchall()
         rows = conn.execute(
             "SELECT ts, payload_json FROM odds_snapshots ORDER BY ts DESC LIMIT 12000"
         ).fetchall()
@@ -747,7 +755,7 @@ def create_app():
             """
         ).fetchall()
         conn.close()
-        if not rows and not rc_rows:
+        if not catalog_rows and not rows and not rc_rows:
             return jsonify({"matches": [], "note": "No odds snapshots yet. Go to Matchup Report and Fetch odds first."})
 
         today_et = datetime.now(ET).date()
@@ -756,6 +764,31 @@ def create_app():
 
         by_match = {}
         latest_ts = None
+
+        for r in catalog_rows:
+            date_et = r["start_date_et"] or _et_date_from_iso(r["commence_time"])
+            if not date_et:
+                continue
+            try:
+                d_et = datetime.strptime(date_et, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if not (lower_date <= d_et <= upper_date):
+                continue
+            by_match[r["match_id"]] = {
+                "match_id": r["match_id"],
+                "sport_key": r["sport_key"],
+                "tournament": r["tournament"],
+                "commence_time": r["commence_time"],
+                "start_date_et": date_et,
+                "home_team": r["player_b"],
+                "away_team": r["player_a"],
+                "bookmaker": r["bookmaker"],
+                "outcomes": json.loads(r["outcomes_json"] or "[]"),
+            }
+            if latest_ts is None:
+                latest_ts = r["updated_ts"]
+
         for r in rows:
             try:
                 m = json.loads(r["payload_json"])
@@ -834,6 +867,46 @@ def create_app():
                     "name": r["side"],
                     "odds_decimal": r["price_decimal"],
                 })
+
+        # Best-effort fallback: if recent prior-day matches were never captured into local
+        # snapshots/candidates, supplement from the live scores/results feed so the Bet Tracker
+        # can still offer recent matches for manual entry.
+        try:
+            sports, _headers = list_sports()
+            atp = [s for s in (sports or []) if s.get("active") and str(s.get("key") or "").startswith("tennis_atp")]
+            atp = sorted(atp, key=lambda s: str(s.get("key") or ""))
+            if atp:
+                score_events, _score_headers = get_scores(sport_key=atp[0]["key"], days_from=max(3, recent_days + 1))
+                for m in (score_events or []):
+                    mid = normalize_match(m)
+                    commence_time = m.get("commence_time")
+                    date_et = _et_date_from_iso(commence_time)
+                    if not date_et:
+                        continue
+                    try:
+                        d_et = datetime.strptime(date_et, "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    if not (lower_date <= d_et <= upper_date):
+                        continue
+                    if mid in by_match:
+                        continue
+                    by_match[mid] = {
+                        "match_id": mid,
+                        "sport_key": m.get("sport_key") or atp[0]["key"],
+                        "tournament": m.get("sport_title") or atp[0].get("description") or atp[0].get("title"),
+                        "commence_time": commence_time,
+                        "start_date_et": date_et,
+                        "home_team": m.get("home_team"),
+                        "away_team": m.get("away_team"),
+                        "bookmaker": None,
+                        "outcomes": [
+                            {"name": m.get("away_team"), "odds_decimal": None},
+                            {"name": m.get("home_team"), "odds_decimal": None},
+                        ],
+                    }
+        except Exception:
+            pass
 
         def _sort_key(x):
             ts = x.get("commence_time")
@@ -1847,12 +1920,54 @@ def create_app():
         conn = connect()
         ts = utc_now_iso()
 
-        # store legacy raw snapshot (per match)
+        # store legacy raw snapshot (per match) + durable recent-match catalog for Bet Tracker
         for m in odds:
             mid = normalize_match(m)
             conn.execute(
                 "INSERT INTO odds_snapshots (ts, sport_key, match_id, payload_json) VALUES (?, ?, ?, ?)",
                 (ts, sport_key, mid, json.dumps(m)),
+            )
+            bm = (m.get("bookmakers") or [])
+            first = bm[0] if bm else None
+            h2h = None
+            if first:
+                for market in first.get("markets") or []:
+                    if market.get("key") == "h2h":
+                        h2h = market
+                        break
+            outcomes = []
+            if h2h:
+                for o in h2h.get("outcomes") or []:
+                    outcomes.append({"name": o.get("name"), "odds_decimal": o.get("price")})
+            conn.execute(
+                """
+                INSERT INTO recent_match_catalog (match_id, sport_key, tournament, commence_time, start_date_et, player_a, player_b, bookmaker, outcomes_json, source, updated_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(match_id) DO UPDATE SET
+                  sport_key = excluded.sport_key,
+                  tournament = excluded.tournament,
+                  commence_time = excluded.commence_time,
+                  start_date_et = excluded.start_date_et,
+                  player_a = excluded.player_a,
+                  player_b = excluded.player_b,
+                  bookmaker = excluded.bookmaker,
+                  outcomes_json = excluded.outcomes_json,
+                  source = excluded.source,
+                  updated_ts = excluded.updated_ts
+                """,
+                (
+                    mid,
+                    sport_key,
+                    m.get("sport_title"),
+                    m.get("commence_time"),
+                    _et_date_from_iso(m.get("commence_time")),
+                    m.get("away_team"),
+                    m.get("home_team"),
+                    first.get("title") if first else None,
+                    json.dumps(outcomes),
+                    "odds_api",
+                    ts,
+                ),
             )
 
         # store v2 snapshot (one row per refresh)

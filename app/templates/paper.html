@@ -55,12 +55,12 @@
 
 <div class="card">
   <h3 style="margin-top:0;">Add bet</h3>
-  <div class="muted">Tip: this dropdown now includes recent prior-day matches too, not just today’s live slate.</div>
+  <div class="muted">Tip: the dropdown includes recent matches when available, but you can also type the match/date manually if a past slate was never captured.</div>
   <form method="post" action="/paper/add" style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top:10px;">
     <select id="matchSelect" name="match_id">
       <option value="">Match (optional)</option>
     </select>
-    <input type="hidden" id="matchLabel" name="match_label" />
+    <input id="matchLabel" name="match_label" placeholder="Match label (e.g. Alcaraz vs Djokovic)" />
     <input id="tournament" name="tournament" placeholder="Tournament" />
     <select id="playerSelect" name="player" required>
       <option value="">Player</option>
@@ -71,6 +71,8 @@
       <option value="totals">totals</option>
     </select>
 
+    <input type="date" id="startDateEt" name="start_date_et" />
+    <input type="hidden" id="commenceTime" name="commence_time" />
     <input id="oddsAm" name="odds_american" placeholder="Odds e.g. -135 / +220" />
     <input name="units" placeholder="Units" required />
     <select name="result">
@@ -131,9 +133,11 @@ async function loadCandidates(){
     const mid = ms.value;
     const m = candidates.find(x => x.match_id === mid);
 
-    // tournament + match label
+    // tournament + match label + date
     document.getElementById('tournament').value = m ? (m.tournament || '') : '';
     document.getElementById('matchLabel').value = m ? `${m.away_team} vs ${m.home_team}` : '';
+    document.getElementById('startDateEt').value = m ? (m.start_date_et || '') : '';
+    document.getElementById('commenceTime').value = m ? (m.commence_time || '') : '';
 
     // players
     const ps = document.getElementById('playerSelect');
@@ -160,6 +164,7 @@ async function loadCandidates(){
   });
 }
 
+document.getElementById('startDateEt').value = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 loadCandidates();
 </script>
 

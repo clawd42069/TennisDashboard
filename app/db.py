@@ -320,6 +320,27 @@ def migrate():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_date ON daily_watchlist(date_et);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_watchlist_match ON daily_watchlist(match_id);")
 
+    # ---------------- Recent match catalog (durable dropdown source for Bet Tracker) ----------------
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recent_match_catalog (
+          match_id TEXT PRIMARY KEY,
+          sport_key TEXT,
+          tournament TEXT,
+          commence_time TEXT,
+          start_date_et TEXT,
+          player_a TEXT,
+          player_b TEXT,
+          bookmaker TEXT,
+          outcomes_json TEXT,
+          source TEXT,
+          updated_ts TEXT NOT NULL
+        );
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recent_match_catalog_date ON recent_match_catalog(start_date_et);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recent_match_catalog_time ON recent_match_catalog(commence_time);")
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS score_event_archive (
