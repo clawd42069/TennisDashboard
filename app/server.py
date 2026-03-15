@@ -737,8 +737,17 @@ def create_app():
         rows = conn.execute(
             "SELECT ts, payload_json FROM odds_snapshots ORDER BY ts DESC LIMIT 12000"
         ).fetchall()
+        rc_rows = conn.execute(
+            """
+            SELECT id, created_at, match_id, commence_time, tournament, player_a, player_b, side, price_decimal, book, market_type
+            FROM ranked_candidates
+            WHERE market_type = 'ML'
+            ORDER BY id DESC
+            LIMIT 12000
+            """
+        ).fetchall()
         conn.close()
-        if not rows:
+        if not rows and not rc_rows:
             return jsonify({"matches": [], "note": "No odds snapshots yet. Go to Matchup Report and Fetch odds first."})
 
         today_et = datetime.now(ET).date()
@@ -794,11 +803,48 @@ def create_app():
             if latest_ts is None:
                 latest_ts = r["ts"]
 
-        matches = sorted(
-            by_match.values(),
-            key=lambda x: (DateTime_from_iso := datetime.fromisoformat((x.get("commence_time") or "").replace("Z", "+00:00"))) if x.get("commence_time") else datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
+        for r in rc_rows:
+            commence_time = r["commence_time"]
+            date_et = _et_date_from_iso(commence_time)
+            if not date_et:
+                continue
+            try:
+                d_et = datetime.strptime(date_et, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if not (lower_date <= d_et <= upper_date):
+                continue
+
+            mid = r["match_id"]
+            if mid not in by_match:
+                by_match[mid] = {
+                    "match_id": mid,
+                    "sport_key": None,
+                    "tournament": r["tournament"],
+                    "commence_time": commence_time,
+                    "start_date_et": date_et,
+                    "home_team": r["player_b"],
+                    "away_team": r["player_a"],
+                    "bookmaker": r["book"],
+                    "outcomes": [],
+                }
+            outcome_names = {o.get("name") for o in (by_match[mid].get("outcomes") or [])}
+            if r["side"] and r["side"] not in outcome_names:
+                by_match[mid]["outcomes"].append({
+                    "name": r["side"],
+                    "odds_decimal": r["price_decimal"],
+                })
+
+        def _sort_key(x):
+            ts = x.get("commence_time")
+            if not ts:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            try:
+                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+
+        matches = sorted(by_match.values(), key=_sort_key, reverse=True)
 
         return jsonify({"ts": latest_ts, "matches": matches, "days": recent_days})
 
