@@ -115,7 +115,7 @@
         <option value="PUSH">PUSH</option>
       </select>
       <input id="betNote" placeholder="Note" style="grid-column:span 2;" />
-      <div class="muted" id="betModalHint" style="grid-column:span 2; position:relative; z-index:10001;">Prefilled from the actionable card. Adjust units or note, then save.</div>
+      <div class="muted" id="betModalHint" style="grid-column:span 2; position:relative; z-index:10001;">Prefilled from the matchup card. Adjust units or note, then save.</div>
       <div style="grid-column:span 2; display:flex; gap:10px; justify-content:flex-end; position:relative; z-index:10001;">
         <a href="/paper" class="pill" style="text-decoration:none;">Open Bet Tracker</a>
         <button type="submit">Save bet</button>
@@ -347,7 +347,7 @@ function candidateCard(c, compact=false, section='debug'){
       </details>
 
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-        ${section === 'actionable' ? `<button onclick="openBetModal(decodeURIComponent(this.dataset.candidate))" data-candidate="${encodeURIComponent(JSON.stringify(c))}">Track bet</button>` : ''}
+        ${['actionable','watchlist'].includes(section) ? `<button onclick="openBetModal(decodeURIComponent(this.dataset.candidate))" data-candidate="${encodeURIComponent(JSON.stringify(c))}">Track bet</button>` : ''}
         ${c.id ? `<button onclick="loadClv(${c.id})">Show CLV</button>` : ''}
       </div>
     </div>
