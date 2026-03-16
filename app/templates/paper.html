@@ -184,7 +184,7 @@ loadCandidates();
           <td class="muted">{{ b.match_label or b.match_id or '' }}</td>
           <td><strong>{{ b.player }}</strong></td>
           <td class="muted">{{ 'ML' if b.market == 'h2h' else b.market }}</td>
-          <td><strong>{{ b.odds_american or '' }}</strong></td>
+          <td><strong>{% if b.odds_american is not none and b.odds_american != '' %}{% if b.odds_american > 0 %}+{% endif %}{{ b.odds_american }}{% else %}{% endif %}</strong></td>
           <td><strong>{{ b.units }}</strong></td>
           {% set res = b.result or 'OPEN' %}
           <td class="muted {% if res == 'WIN' %}win{% elif res == 'LOSS' %}loss{% endif %}">{{ res }}</td>
@@ -228,6 +228,12 @@ function fmtEt(iso){
 function money(v){ return v === null || v === undefined ? '—' : `$${Number(v).toFixed(2)}`; }
 function pct(v){ return v === null || v === undefined ? '—' : `${(Number(v)*100).toFixed(1)}%`; }
 function displayMarket(v){ return (v || '').toLowerCase() === 'h2h' ? 'ML' : (v || ''); }
+function americanOddsText(v){
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n > 0 ? `+${n}` : `${n}`;
+}
 
 function renderPaperSummary(perf){
   document.getElementById('paperSummaryCards').innerHTML = `
@@ -265,7 +271,7 @@ function renderRecentBets(bets){
       <td class="muted">${b.match_label || b.match_id || ''}</td>
       <td><strong>${b.player || ''}</strong></td>
       <td class="muted">${displayMarket(b.market)}</td>
-      <td><strong>${b.odds_american || ''}</strong></td>
+      <td><strong>${americanOddsText(b.odds_american)}</strong></td>
       <td><strong>${b.units || ''}</strong></td>
       <td class="muted ${cls}">${res}</td>
       <td class="${cls}"><strong>${pnl}</strong></td>
