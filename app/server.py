@@ -1306,13 +1306,26 @@ def create_app():
         return jsonify({"count": len(rows), "matches": [dict(r) for r in rows]})
 
     def infer_surface(sport_key: str) -> str | None:
-        # v1 heuristic; we can upgrade later with tournament metadata.
-        if "indian_wells" in (sport_key or ""):
+        # Tournament-key heuristic. We only need broad ATP surface families here.
+        key = (sport_key or "").lower()
+        hard_keys = [
+            "indian_wells", "miami_open", "australian_open", "us_open",
+            "cincinnati", "canadian_open", "shanghai", "paris_masters",
+            "doha", "dubai", "acapulco", "tokyo", "beijing",
+        ]
+        clay_keys = [
+            "roland", "french_open", "monte_carlo", "madrid_open",
+            "rome", "barcelona", "hamburg", "estoril", "marrakech",
+        ]
+        grass_keys = [
+            "wimbledon", "halle", "queens", "eastbourne", "mallorca", "stuttgart_open",
+        ]
+        if any(k in key for k in hard_keys):
             return "Hard"
-        if "wimbledon" in (sport_key or ""):
-            return "Grass"
-        if "roland" in (sport_key or "") or "french_open" in (sport_key or ""):
+        if any(k in key for k in clay_keys):
             return "Clay"
+        if any(k in key for k in grass_keys):
+            return "Grass"
         return None
 
     def _current_et_date() -> str:
