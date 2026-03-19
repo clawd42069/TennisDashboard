@@ -276,7 +276,7 @@ function renderRecentBets(bets){
       <td class="muted ${cls}">${res}</td>
       <td class="${cls}"><strong>${pnl}</strong></td>
       <td class="muted">${b.note || ''}</td>
-      <td>${res === 'OPEN' ? `<button onclick="manualSettle(${b.id}, 'WIN')">Win</button> <button onclick="manualSettle(${b.id}, 'LOSS')">Loss</button> <button onclick="manualSettle(${b.id}, 'PUSH')">Push</button>` : '<span class="muted">—</span>'}</td>
+      <td>${res === 'OPEN' ? `<button onclick="manualSettle(${b.id}, 'WIN')">Win</button> <button onclick="manualSettle(${b.id}, 'LOSS')">Loss</button> <button onclick="manualSettle(${b.id}, 'PUSH')">Push</button> <button onclick="deleteBet(${b.id})">Delete</button>` : `<button onclick="deleteBet(${b.id})">Delete</button>`}</td>
     </tr>`;
   }).join('');
 }
@@ -290,6 +290,21 @@ async function manualSettle(betId, result){
   const j = await r.json();
   if (!r.ok || !j.ok){
     alert(j.error || 'Failed to settle bet.');
+    return;
+  }
+  await refreshPaperState();
+}
+
+async function deleteBet(betId){
+  if (!confirm('Delete this bet from the tracker?')) return;
+  const r = await fetch('/api/paper/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bet_id: betId })
+  });
+  const j = await r.json();
+  if (!r.ok || !j.ok){
+    alert(j.error || 'Failed to delete bet.');
     return;
   }
   await refreshPaperState();

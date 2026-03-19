@@ -311,6 +311,22 @@ def create_app():
         conn.close()
         return jsonify({"ok": True, "bet": dict(out) if out else {"id": bet_id}})
 
+    @app.post("/api/paper/delete")
+    def api_paper_delete():
+        payload = request.get_json(silent=True) or {}
+        bet_id = payload.get("bet_id")
+        if not bet_id:
+            return jsonify({"ok": False, "error": "bet_id required"}), 400
+        conn = connect()
+        row = conn.execute("SELECT * FROM paper_bets WHERE id = ?", (int(bet_id),)).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "bet not found"}), 404
+        conn.execute("DELETE FROM paper_bets WHERE id = ?", (int(bet_id),))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "deleted": int(bet_id)})
+
     @app.get("/strategies")
     def strategies():
         """Tab D: strategies + backtests + current selection audit."""
