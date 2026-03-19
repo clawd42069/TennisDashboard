@@ -118,6 +118,12 @@ def create_app():
             )
 
     def _paper_state(conn):
+        def _num(v, default=0.0):
+            try:
+                return float(v)
+            except Exception:
+                return default
+
         _backfill_paper_start_fields(conn)
         conn.commit()
         bets = conn.execute(
@@ -151,8 +157,8 @@ def create_app():
         losses = [b for b in settled if b.get("result") == "LOSS"]
         open_bets = [b for b in enriched if (b.get("result") or "OPEN") == "OPEN"]
 
-        total_pnl = sum((b.get("pnl_dollars") or 0.0) for b in settled)
-        total_units = sum((b.get("units") or 0.0) for b in enriched)
+        total_pnl = sum(_num(b.get("pnl_dollars")) for b in settled)
+        total_units = sum(_num(b.get("units")) for b in enriched)
         win_rate = (len(wins) / (len(wins) + len(losses))) if (len(wins) + len(losses)) > 0 else None
 
         by_type = {}
@@ -165,7 +171,7 @@ def create_app():
             elif b.get("result") == "LOSS":
                 by_type[t]["losses"] += 1
             if b.get("result") in ("WIN", "LOSS", "PUSH"):
-                by_type[t]["pnl"] += float(b.get("pnl_dollars") or 0.0)
+                by_type[t]["pnl"] += _num(b.get("pnl_dollars"))
 
         perf = {
             "total_pnl": total_pnl,
