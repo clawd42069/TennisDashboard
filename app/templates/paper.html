@@ -173,7 +173,7 @@ loadCandidates();
   <table>
     <thead>
       <tr>
-        <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Units</th><th>Result</th><th>P/L</th><th>Note</th><th>Action</th>
+        <th>Time</th><th>Tournament</th><th>Match</th><th>Selection</th><th>Bet Type</th><th>Odds</th><th>Stake</th><th>Result</th><th>P/L</th><th>Note</th><th>Action</th>
       </tr>
     </thead>
     <tbody id="recentBetsBody">
@@ -185,7 +185,7 @@ loadCandidates();
           <td><strong>{{ b.player }}</strong></td>
           <td class="muted">{{ 'ML' if b.market == 'h2h' else b.market }}</td>
           <td><strong>{% if b.odds_american is not none and b.odds_american != '' %}{% if b.odds_american > 0 %}+{% endif %}{{ b.odds_american }}{% else %}{% endif %}</strong></td>
-          <td><strong>{{ b.units }}</strong></td>
+          <td><strong>{{ b.units }}u{% if b.units is not none %} (${{ '%.0f'|format((b.units|float) * 500) }}){% endif %}</strong></td>
           {% set res = b.result or 'OPEN' %}
           <td class="muted {% if res == 'WIN' %}win{% elif res == 'LOSS' %}loss{% endif %}">{{ res }}</td>
           <td class="{% if res == 'WIN' %}win{% elif res == 'LOSS' %}loss{% endif %}"><strong>
@@ -272,7 +272,7 @@ function renderRecentBets(bets){
       <td><strong>${b.player || ''}</strong></td>
       <td class="muted">${displayMarket(b.market)}</td>
       <td><strong>${americanOddsText(b.odds_american)}</strong></td>
-      <td><strong>${b.units || ''}</strong></td>
+      <td><strong>${b.units || ''}u${(b.units !== null && b.units !== undefined && b.units !== '') ? ` ($${Math.round(Number(b.units) * 500)})` : ''}</strong></td>
       <td class="muted ${cls}">${res}</td>
       <td class="${cls}"><strong>${pnl}</strong></td>
       <td class="muted">${b.note || ''}</td>
