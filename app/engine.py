@@ -245,7 +245,7 @@ class Candidate:
 
 # ---------- Main candidate generation ----------
 
-def generate_ml_candidates(conn, events: list[dict[str, Any]], surface: str | None, player_id_lookup, top_n: int = 10) -> list[Candidate]:
+def generate_ml_candidates(conn, events: list[dict[str, Any]], surface: str | None, player_id_lookup, top_n: int | None = None) -> list[Candidate]:
     """Generate ML candidates with three-axis scoring.
 
     Matchup Strength
@@ -565,4 +565,6 @@ def generate_ml_candidates(conn, events: list[dict[str, Any]], surface: str | No
         )
 
     out.sort(key=lambda c: (c.ev_adj if c.ev_adj is not None else -999), reverse=True)
+    if top_n is None or top_n <= 0:
+        return out
     return out[:top_n]

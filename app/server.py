@@ -2004,7 +2004,9 @@ def create_app():
         snapshot_id = cur.lastrowid
 
         # ---------------- Candidate generation (v0: ML only) ----------------
-        candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=top_n)
+        # Score the full slate first so no match is silently dropped before ranking.
+        # Each tennis match generates up to 2 side-candidates, so remove the early top-N choke point.
+        candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=None)
 
         thresholds = _selection_thresholds()
 
