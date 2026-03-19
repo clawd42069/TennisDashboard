@@ -146,10 +146,19 @@ def create_app():
 
         enriched = []
         for b in bets:
-            d = dict(b)
-            if not d.get("match_label") and d.get("match_id"):
-                d["match_label"] = match_labels.get(d.get("match_id"))
-            enriched.append(d)
+            try:
+                d = dict(b)
+                if not d.get("match_label") and d.get("match_id"):
+                    d["match_label"] = match_labels.get(d.get("match_id"))
+                # Normalize fields that commonly arrive malformed from old rows.
+                d["units"] = _num(d.get("units"), None)
+                d["odds_american"] = int(d["odds_american"]) if d.get("odds_american") not in (None, "") else None
+                d["pnl_units"] = _num(d.get("pnl_units"), None)
+                d["pnl_dollars"] = _num(d.get("pnl_dollars"), None)
+                enriched.append(d)
+            except Exception:
+                # Skip corrupted rows rather than crashing the entire tracker page.
+                continue
 
         total_bets = len(enriched)
         settled = [b for b in enriched if (b.get("result") in ("WIN", "LOSS", "PUSH"))]
@@ -303,8 +312,14 @@ def create_app():
         if not row:
             conn.close()
             return jsonify({"ok": False, "error": "bet not found"}), 404
-        units = float(row["units"] or 0.0)
-        odds_am = row["odds_american"]
+        try:
+            units = float(row["units"] or 0.0)
+        except Exception:
+            units = 0.0
+        try:
+            odds_am = int(row["odds_american"]) if row["odds_american"] not in (None, "") else None
+        except Exception:
+            odds_am = None
         pnl_units = pnl_units_for_result(result, units, odds_am)
         pnl_dollars = units_to_dollars(pnl_units, 500.0)
         settled_ts = utc_now_iso() if result in ("WIN", "LOSS", "PUSH") else None
@@ -730,20 +745,27 @@ def create_app():
     @app.get("/api/paper/state")
     def api_paper_state():
         conn = connect()
-        open_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'"
-        ).fetchone()
-        open_n = int((open_row or {"n": 0})["n"])
-        settle_info = None
-        if open_n > 0 and _should_run_on_demand_settle(60):
-            settle_info = _settle_open_paper_bets(conn, days_from=1)
-            conn.commit()
-            _settler["last_on_demand"] = utc_now_iso()
-        state = _paper_state(conn)
-        conn.close()
-        if settle_info is not None:
-            state["settle"] = settle_info
-        return jsonify(state)
+        try:
+            open_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'"
+            ).fetchone()
+            open_n = int((open_row or {"n": 0})["n"])
+            settle_info = None
+            if open_n > 0 and _should_run_on_demand_settle(60):
+                try:
+                    settle_info = _settle_open_paper_bets(conn, days_from=1)
+                    conn.commit()
+                    _settler["last_on_demand"] = utc_now_iso()
+                except Exception:
+                    settle_info = {"updated": 0, "errors": ["paper auto-settle failed"]}
+            state = _paper_state(conn)
+            if settle_info is not None:
+                state["settle"] = settle_info
+            return jsonify(state)
+        except Exception as e:
+            return jsonify({"bets": [], "perf": {"total_pnl": 0.0, "wins": 0, "losses": 0, "settled": 0, "total_bets": 0, "open_bets": 0, "win_rate": None, "total_units": 0.0, "by_type": {}}, "error": str(e)}), 200
+        finally:
+            conn.close()
 
     @app.get("/api/paper_candidates")
     def api_paper_candidates():
