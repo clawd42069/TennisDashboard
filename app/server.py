@@ -1047,13 +1047,15 @@ def create_app():
 
         if not snap and auto_fetch:
             try:
+                requested_sport_key = (request.args.get("sport_key") or "").strip()
+                requested_markets = (request.args.get("markets") or "h2h").strip() or "h2h"
                 sports, _headers = list_sports()
                 atp = [s for s in (sports or []) if s.get("active") and str(s.get("key") or "").startswith("tennis_atp")]
                 atp = sorted(atp, key=lambda s: str(s.get("key") or ""))
                 if not atp:
                     return jsonify({"error": "no_active_atp_feed", "date_et": date_et}), 404
-                sport_key = atp[0]["key"]
-                with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets=h2h&capture_daily=1"):
+                sport_key = requested_sport_key or atp[0]["key"]
+                with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets={requested_markets}&capture_daily=1"):
                     resp = api_odds()
                 if isinstance(resp, tuple):
                     response, status = resp
@@ -1101,13 +1103,15 @@ def create_app():
             except Exception:
                 pass
             # Fallback to a fresh live fetch instead of leaving the day page frozen.
+            requested_sport_key = (request.args.get("sport_key") or "").strip()
+            requested_markets = (request.args.get("markets") or "h2h").strip() or "h2h"
             sports, _headers = list_sports()
             atp = [s for s in (sports or []) if s.get("active") and str(s.get("key") or "").startswith("tennis_atp")]
             atp = sorted(atp, key=lambda s: str(s.get("key") or ""))
             if not atp:
                 return jsonify({"error": "no_active_atp_feed", "date_et": date_et}), 404
-            sport_key = atp[0]["key"]
-            with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets=h2h"):
+            sport_key = requested_sport_key or atp[0]["key"]
+            with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets={requested_markets}"):
                 resp = api_odds()
             if isinstance(resp, tuple):
                 response, status = resp

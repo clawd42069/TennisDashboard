@@ -15,19 +15,21 @@
 
 <div class="card">
   <h3 style="margin-top:0;">ATP slate controls</h3>
-  <div class="muted">Daily ET slate is loaded automatically. You can still manually refresh or pull a specific live feed if needed.</div>
+  <div class="muted">One clean flow: pick the ET date if needed, then refresh the slate. Feed + market settings stay available without needing separate load buttons.</div>
   <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
-    <button onclick="loadSports()">Load tennis feeds</button>
+    <label class="muted" for="slateDate">Date</label>
+    <input id="slateDate" type="date" />
+    <button onclick="setTodayOnly()">Today</button>
+    <button onclick="loadDailyMatchups(true)">Refresh slate</button>
+  </div>
+  <div style="margin-top:10px; display:flex; gap:10px; flex-wrap: wrap; align-items:center;">
+    <label class="muted" for="sportKey">Feed</label>
     <select id="sportKey"></select>
+    <label class="muted" for="markets">Markets</label>
     <select id="markets">
       <option value="h2h">ML</option>
       <option value="h2h,spreads,totals">ML + spreads + totals</option>
     </select>
-    <input id="slateDate" type="date" />
-    <button onclick="loadDailyMatchups(true)">Load selected ET day</button>
-    <button onclick="setTodayAndLoad()">Today</button>
-    <button onclick="fetchOdds()">Fetch live odds</button>
-    <button onclick="stopAutoRefresh()">Stop refresh</button>
   </div>
   <div id="sportsMeta" class="muted" style="margin-top:10px;"></div>
   <div id="snapshotMeta" class="muted" style="margin-top:8px;"></div>
@@ -465,7 +467,7 @@ async function loadSports(){
     sel.appendChild(opt);
   });
 
-  el.textContent = `Found ${(j.tennis||[]).length} tennis feeds. Requests remaining: ${j.requests_remaining ?? 'n/a'}`;
+  el.textContent = `Feed ready • ${(j.tennis||[]).length} tennis feeds available • requests remaining ${j.requests_remaining ?? 'n/a'}`;
 }
 
 function computeSlateSummaryFromOutputs(outputs){
@@ -490,17 +492,18 @@ function computeSlateSummaryFromOutputs(outputs){
   return summary;
 }
 
-function setTodayAndLoad(){
+function setTodayOnly(){
   document.getElementById('slateDate').value = etTodayString();
-  loadDailyMatchups(true);
 }
 
 async function loadDailyMatchups(showMessage=false){
   stopAutoRefresh(false);
   const meta = document.getElementById('snapshotMeta');
   const date = currentSelectedDate();
+  const sportKey = document.getElementById('sportKey').value || '';
+  const markets = document.getElementById('markets').value || 'h2h';
   if (showMessage) meta.textContent = `Loading ATP slate for ${date}…`;
-  const r = await fetch(`/api/matchups/daily?date=${encodeURIComponent(date)}&auto_fetch=1`);
+  const r = await fetch(`/api/matchups/daily?date=${encodeURIComponent(date)}&auto_fetch=1&sport_key=${encodeURIComponent(sportKey)}&markets=${encodeURIComponent(markets)}`);
   const j = await r.json();
   if (j.error){
     meta.innerHTML = `<span class="err">${j.error}</span><br><span class="muted">${j.message || ''}</span>`;
