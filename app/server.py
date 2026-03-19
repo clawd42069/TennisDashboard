@@ -1083,18 +1083,53 @@ def create_app():
         if not snap:
             return jsonify({"date_et": date_et, "snapshot": None, "candidates_debug": [], "candidates_watchlist": [], "candidates_actionable": []})
 
-        conn = connect()
-        rows_all = conn.execute(
-            "SELECT * FROM ranked_candidates WHERE snapshot_id = ? ORDER BY ev_adj DESC NULLS LAST, confidence DESC NULLS LAST LIMIT 300",
-            (snap["id"],),
-        ).fetchall()
-        payload_rows = conn.execute(
-            "SELECT match_id, payload_json FROM odds_snapshots WHERE ts = ? AND sport_key = ?",
-            (snap["ts"], snap["sport_key"]),
-        ).fetchall()
-        actionables_stats = _daily_actionable_stats(conn, date_et)
-        watchlist_stats = _daily_watchlist_stats(conn, date_et)
-        conn.close()
+        try:
+            conn = connect()
+            rows_all = conn.execute(
+                "SELECT * FROM ranked_candidates WHERE snapshot_id = ? ORDER BY ev_adj DESC NULLS LAST, confidence DESC NULLS LAST LIMIT 1000",
+                (snap["id"],),
+            ).fetchall()
+            payload_rows = conn.execute(
+                "SELECT match_id, payload_json FROM odds_snapshots WHERE ts = ? AND sport_key = ?",
+                (snap["ts"], snap["sport_key"]),
+            ).fetchall()
+            actionables_stats = _daily_actionable_stats(conn, date_et)
+            watchlist_stats = _daily_watchlist_stats(conn, date_et)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            # Fallback to a fresh live fetch instead of leaving the day page frozen.
+            sports, _headers = list_sports()
+            atp = [s for s in (sports or []) if s.get("active") and str(s.get("key") or "").startswith("tennis_atp")]
+            atp = sorted(atp, key=lambda s: str(s.get("key") or ""))
+            if not atp:
+                return jsonify({"error": "no_active_atp_feed", "date_et": date_et}), 404
+            sport_key = atp[0]["key"]
+            with app.test_request_context(f"/api/odds?sport_key={sport_key}&markets=h2h"):
+                resp = api_odds()
+            if isinstance(resp, tuple):
+                response, status = resp
+                return response, status
+            data = resp.get_json() or {}
+            outputs_for_date = [row for row in (data.get("outputs") or []) if _et_date_from_iso((row or {}).get("commence_time")) == date_et]
+            for key in ["candidates_debug", "candidates_watchlist", "candidates_actionable"]:
+                data[key] = [row for row in (data.get(key) or []) if _et_date_from_iso((row or {}).get("commence_time")) == date_et]
+            summary = _match_status_counts(outputs_for_date)
+            summary["date_et"] = date_et
+            summary["actionables"] = {"total": len(data.get("candidates_actionable") or []), "wins": 0, "losses": 0, "open_n": len(data.get("candidates_actionable") or []), "win_rate": None}
+            summary["watchlist"] = {"total": len(data.get("candidates_watchlist") or []), "wins": 0, "losses": 0, "open_n": len(data.get("candidates_watchlist") or []), "win_rate": None}
+            data["date_et"] = date_et
+            data["snapshot"] = None
+            data["slate_summary"] = summary
+            data["fallback_live"] = True
+            return jsonify(data)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         thresholds = _selection_thresholds()
 
@@ -1319,9 +1354,22 @@ def create_app():
     @app.get("/api/strategy/audit")
     def api_strategy_audit():
         conn = connect()
-        audit = _strategy_audit_summary(conn)
-        conn.close()
-        return jsonify(audit)
+        try:
+            audit = _strategy_audit_summary(conn)
+            return jsonify(audit)
+        except Exception as e:
+            return jsonify({
+                "latest_snapshot_count": 0,
+                "latest_actionables": {},
+                "latest_watchlist": {},
+                "settled_actionables": {},
+                "settled_watchlist": {},
+                "thresholds": _selection_thresholds(),
+                "data_tracking": {},
+                "notes": [f"strategy audit temporarily unavailable: {e}"],
+            }), 200
+        finally:
+            conn.close()
 
     @app.get("/api/style/player")
     def api_style_player():
@@ -2119,110 +2167,101 @@ def create_app():
 
         conn = connect()
         ts = utc_now_iso()
-
-        # store legacy raw snapshot (per match) + durable recent-match catalog for Bet Tracker
-        for m in odds:
-            mid = normalize_match(m)
-            conn.execute(
-                "INSERT INTO odds_snapshots (ts, sport_key, match_id, payload_json) VALUES (?, ?, ?, ?)",
-                (ts, sport_key, mid, json.dumps(m)),
-            )
-            bm = (m.get("bookmakers") or [])
-            first = bm[0] if bm else None
-            h2h = None
-            if first:
-                for market in first.get("markets") or []:
-                    if market.get("key") == "h2h":
-                        h2h = market
-                        break
-            outcomes = []
-            if h2h:
-                for o in h2h.get("outcomes") or []:
-                    outcomes.append({"name": o.get("name"), "odds_decimal": o.get("price")})
-            conn.execute(
-                """
-                INSERT INTO recent_match_catalog (match_id, sport_key, tournament, commence_time, start_date_et, player_a, player_b, bookmaker, outcomes_json, source, updated_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(match_id) DO UPDATE SET
-                  sport_key = excluded.sport_key,
-                  tournament = excluded.tournament,
-                  commence_time = excluded.commence_time,
-                  start_date_et = excluded.start_date_et,
-                  player_a = excluded.player_a,
-                  player_b = excluded.player_b,
-                  bookmaker = excluded.bookmaker,
-                  outcomes_json = excluded.outcomes_json,
-                  source = excluded.source,
-                  updated_ts = excluded.updated_ts
-                """,
-                (
-                    mid,
-                    sport_key,
-                    m.get("sport_title"),
-                    m.get("commence_time"),
-                    _et_date_from_iso(m.get("commence_time")),
-                    m.get("away_team"),
-                    m.get("home_team"),
-                    first.get("title") if first else None,
-                    json.dumps(outcomes),
-                    "odds_api",
-                    ts,
-                ),
-            )
-
-        # store v2 snapshot (one row per refresh)
-        cur = conn.execute(
-            """
-            INSERT INTO snapshots (ts, tour, sport_key, markets, regions, top_n, refresh_interval_sec, model_version, slate_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ts,
-                "ATP",
-                sport_key,
-                markets,
-                regions,
-                top_n,
-                refresh_interval_sec,
-                model_version,
-                None,
-            ),
-        )
-        snapshot_id = cur.lastrowid
-
-        # ---------------- Candidate generation (v0: ML only) ----------------
-        # Score the full slate first so no match is silently dropped before ranking.
-        # Each tennis match generates up to 2 side-candidates, so remove the early top-N choke point.
-        candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=None)
-
+        snapshot_id = None
         thresholds = _selection_thresholds()
-
-        odds_by_match = {normalize_match(m): m for m in odds}
-
-        for c in candidates:
-            if _is_heavy_favorite_ml(c, thresholds):
-                c.reasons.append("Heavy-favorite ML: prefer same-player spread / alt market when available; downgrade plain ML unless edge is exceptional.")
-
-        candidates = sorted(candidates, key=lambda c: _selection_sort_key(c, thresholds))
-
+        candidates = []
         actionable = []
         watchlist = []
         classified = []
-        for c in candidates:
-            view_mode, is_actionable = _classify_candidate(c, thresholds)
-            alt_market = _best_alternative_market(odds_by_match.get(c.match_id) or {}, c.side) if _is_heavy_favorite_ml(c, thresholds) else None
-            strategy_meta = _build_strategy_reasoning(c, "actionable" if is_actionable else view_mode, thresholds, alt_market=alt_market)
-            c.selection_tier = strategy_meta["tier"]
-            c.units_suggested = strategy_meta["units"]
-            c.strategy_summary = strategy_meta["summary"]
-            c.strategy_why = strategy_meta["why"]
-            c.strategy_risk = strategy_meta["risk"]
-            c.alternative_market = strategy_meta["alternative_market"]
-            classified.append((c, view_mode, is_actionable))
-            if is_actionable:
-                actionable.append(c)
-            elif view_mode == "watchlist":
-                watchlist.append(c)
+        api_warning = None
+
+        try:
+            # store legacy raw snapshot (per match) + durable recent-match catalog for Bet Tracker
+            for m in odds:
+                mid = normalize_match(m)
+                conn.execute(
+                    "INSERT INTO odds_snapshots (ts, sport_key, match_id, payload_json) VALUES (?, ?, ?, ?)",
+                    (ts, sport_key, mid, json.dumps(m)),
+                )
+                bm = (m.get("bookmakers") or [])
+                first = bm[0] if bm else None
+                h2h = None
+                if first:
+                    for market in first.get("markets") or []:
+                        if market.get("key") == "h2h":
+                            h2h = market
+                            break
+                outcomes = []
+                if h2h:
+                    for o in h2h.get("outcomes") or []:
+                        outcomes.append({"name": o.get("name"), "odds_decimal": o.get("price")})
+                conn.execute(
+                    """
+                    INSERT INTO recent_match_catalog (match_id, sport_key, tournament, commence_time, start_date_et, player_a, player_b, bookmaker, outcomes_json, source, updated_ts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(match_id) DO UPDATE SET
+                      sport_key = excluded.sport_key,
+                      tournament = excluded.tournament,
+                      commence_time = excluded.commence_time,
+                      start_date_et = excluded.start_date_et,
+                      player_a = excluded.player_a,
+                      player_b = excluded.player_b,
+                      bookmaker = excluded.bookmaker,
+                      outcomes_json = excluded.outcomes_json,
+                      source = excluded.source,
+                      updated_ts = excluded.updated_ts
+                    """,
+                    (
+                        mid,
+                        sport_key,
+                        m.get("sport_title"),
+                        m.get("commence_time"),
+                        _et_date_from_iso(m.get("commence_time")),
+                        m.get("away_team"),
+                        m.get("home_team"),
+                        first.get("title") if first else None,
+                        json.dumps(outcomes),
+                        "odds_api",
+                        ts,
+                    ),
+                )
+
+            cur = conn.execute(
+                """
+                INSERT INTO snapshots (ts, tour, sport_key, markets, regions, top_n, refresh_interval_sec, model_version, slate_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, "ATP", sport_key, markets, regions, top_n, refresh_interval_sec, model_version, None),
+            )
+            snapshot_id = cur.lastrowid
+
+            # Score the full slate first so no match is silently dropped before ranking.
+            candidates = generate_ml_candidates(conn, odds, surface=surface, player_id_lookup=player_id_from_name, top_n=None)
+            odds_by_match = {normalize_match(m): m for m in odds}
+
+            for c in candidates:
+                if _is_heavy_favorite_ml(c, thresholds):
+                    c.reasons.append("Heavy-favorite ML: prefer same-player spread / alt market when available; downgrade plain ML unless edge is exceptional.")
+
+            candidates = sorted(candidates, key=lambda c: _selection_sort_key(c, thresholds))
+
+            for c in candidates:
+                view_mode, is_actionable = _classify_candidate(c, thresholds)
+                alt_market = _best_alternative_market(odds_by_match.get(c.match_id) or {}, c.side) if _is_heavy_favorite_ml(c, thresholds) else None
+                strategy_meta = _build_strategy_reasoning(c, "actionable" if is_actionable else view_mode, thresholds, alt_market=alt_market)
+                c.selection_tier = strategy_meta["tier"]
+                c.units_suggested = strategy_meta["units"]
+                c.strategy_summary = strategy_meta["summary"]
+                c.strategy_why = strategy_meta["why"]
+                c.strategy_risk = strategy_meta["risk"]
+                c.alternative_market = strategy_meta["alternative_market"]
+                classified.append((c, view_mode, is_actionable))
+                if is_actionable:
+                    actionable.append(c)
+                elif view_mode == "watchlist":
+                    watchlist.append(c)
+        except Exception as e:
+            api_warning = f"db_persistence_or_scoring_failed: {e}"
 
         def cand_to_dict(c):
             return {
@@ -2258,72 +2297,75 @@ def create_app():
                 "alternative_market": getattr(c, "alternative_market", None),
             }
 
-        # persist candidates
-        created_at = ts
-        for c, view_mode, is_actionable in classified:
-            conn.execute(
-                """
-                INSERT INTO ranked_candidates (
-                  snapshot_id, created_at,
-                  match_id, commence_time, tournament, surface, player_a, player_b,
-                  market_type, side, line, price_decimal, price_american, book,
-                  p0, p_final, q_implied, ev, confidence, ev_adj,
-                  matchup_strength, market_value, reliability,
-                  delta_elo_surface, delta_sr, delta_recency, delta_z_raw, delta_z_capped,
-                  matchup_flags_json,
-                  view_mode, actionable, units_suggested
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    snapshot_id,
-                    created_at,
-                    c.match_id,
-                    c.commence_time,
-                    c.tournament,
-                    c.surface or surface,
-                    c.player_a,
-                    c.player_b,
-                    c.market_type,
-                    c.side,
-                    c.line,
-                    c.price_decimal,
-                    dec_to_american(c.price_decimal),
-                    c.book,
-                    c.p0,
-                    c.p_final,
-                    c.q_implied,
-                    c.ev,
-                    c.confidence,
-                    c.ev_adj,
-                    getattr(c, "matchup_strength", None),
-                    getattr(c, "market_value", None),
-                    getattr(c, "reliability", None),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    json.dumps({
-                        "component_scores": getattr(c, "component_scores", {}),
-                        "axis_notes": getattr(c, "axis_notes", {}),
-                        "reasons": getattr(c, "reasons", []),
-                    }),
-                    view_mode,
-                    1 if is_actionable else 0,
-                    getattr(c, "units_suggested", None),
-                ),
-            )
-
-        # Always capture the day's actionables + watchlist durably.
-        # We upsert onto a daily logical key so history survives later live-board changes.
+        # persist candidates (best effort only; live API should still work if DB writes fail)
         capture_daily_result = {"actionable": 0, "watchlist": 0}
+        if snapshot_id is not None and classified:
+            try:
+                created_at = ts
+                for c, view_mode, is_actionable in classified:
+                    conn.execute(
+                        """
+                        INSERT INTO ranked_candidates (
+                          snapshot_id, created_at,
+                          match_id, commence_time, tournament, surface, player_a, player_b,
+                          market_type, side, line, price_decimal, price_american, book,
+                          p0, p_final, q_implied, ev, confidence, ev_adj,
+                          matchup_strength, market_value, reliability,
+                          delta_elo_surface, delta_sr, delta_recency, delta_z_raw, delta_z_capped,
+                          matchup_flags_json,
+                          view_mode, actionable, units_suggested
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            snapshot_id,
+                            created_at,
+                            c.match_id,
+                            c.commence_time,
+                            c.tournament,
+                            c.surface or surface,
+                            c.player_a,
+                            c.player_b,
+                            c.market_type,
+                            c.side,
+                            c.line,
+                            c.price_decimal,
+                            dec_to_american(c.price_decimal),
+                            c.book,
+                            c.p0,
+                            c.p_final,
+                            c.q_implied,
+                            c.ev,
+                            c.confidence,
+                            c.ev_adj,
+                            getattr(c, "matchup_strength", None),
+                            getattr(c, "market_value", None),
+                            getattr(c, "reliability", None),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            json.dumps({
+                                "component_scores": getattr(c, "component_scores", {}),
+                                "axis_notes": getattr(c, "axis_notes", {}),
+                                "reasons": getattr(c, "reasons", []),
+                            }),
+                            view_mode,
+                            1 if is_actionable else 0,
+                            getattr(c, "units_suggested", None),
+                        ),
+                    )
+                try:
+                    capture_daily_result = _capture_daily_recommendations(conn, snapshot_id=snapshot_id, sport_key=sport_key, created_ts=ts)
+                except Exception:
+                    pass
+                conn.commit()
+            except Exception as e:
+                api_warning = api_warning or f"candidate_persist_failed: {e}"
         try:
-            capture_daily_result = _capture_daily_recommendations(conn, snapshot_id=snapshot_id, sport_key=sport_key, created_ts=ts)
+            conn.close()
         except Exception:
             pass
-
-        conn.commit()
-        conn.close()
 
         # ---------------- Legacy simple outputs (kept for current UI) ----------------
         outputs = []
@@ -2373,6 +2415,8 @@ def create_app():
             "ts": ts,
             "snapshot_id": snapshot_id,
             "selection_thresholds": thresholds,
+            "capture_daily": capture_daily_result,
+            "warning": api_warning,
             "candidates_debug": [cand_to_dict(c) for c in candidates],
             "candidates_watchlist": [cand_to_dict(c) for c in watchlist],
             "candidates_actionable": [cand_to_dict(c) for c in actionable],
