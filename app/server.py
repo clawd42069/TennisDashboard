@@ -1414,6 +1414,125 @@ def create_app():
     def _daily_watchlist_stats(conn, date_et: str):
         return _daily_result_stats(conn, "daily_watchlist", date_et)
 
+    def _capture_daily_recommendations(conn, snapshot_id: int, sport_key: str, created_ts: str):
+        """Persist daily actionables + watchlist durably.
+
+        We upsert by logical bet identity (date + match + side + market + line) so the
+        same pick can be refreshed across the day without creating duplicate history rows,
+        while still preserving the day's record even if the live board later changes.
+        """
+        rows = conn.execute(
+            """
+            SELECT id as candidate_id, match_id, commence_time, player_a, player_b,
+                   market_type, side, line, book, price_decimal, price_american,
+                   confidence, ev, ev_adj, view_mode
+            FROM ranked_candidates
+            WHERE snapshot_id = ? AND view_mode IN ('actionable','watchlist')
+            ORDER BY ev_adj DESC NULLS LAST
+            """,
+            (snapshot_id,),
+        ).fetchall()
+
+        captured = {"actionable": 0, "watchlist": 0}
+        for r in rows:
+            row_date_et = _et_date_from_iso(r["commence_time"])
+            if not row_date_et:
+                continue
+            target_table = "daily_actionables" if r["view_mode"] == "actionable" else "daily_watchlist"
+            existing = conn.execute(
+                f"""
+                SELECT id, capture_count, created_ts, result, settled_ts, score_json
+                FROM {target_table}
+                WHERE date_et = ?
+                  AND match_id = ?
+                  AND side = ?
+                  AND market_type = ?
+                  AND COALESCE(line, -999999.0) = COALESCE(?, -999999.0)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (row_date_et, r["match_id"], r["side"], r["market_type"], r["line"]),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    f"""
+                    UPDATE {target_table}
+                    SET snapshot_id = ?,
+                        candidate_id = ?,
+                        sport_key = ?,
+                        commence_time = ?,
+                        player_a = ?,
+                        player_b = ?,
+                        book = ?,
+                        price_decimal = ?,
+                        price_american = ?,
+                        confidence = ?,
+                        ev = ?,
+                        ev_adj = ?,
+                        last_seen_ts = ?,
+                        capture_count = COALESCE(capture_count, 0) + 1
+                    WHERE id = ?
+                    """,
+                    (
+                        snapshot_id,
+                        int(r["candidate_id"]),
+                        sport_key,
+                        r["commence_time"],
+                        r["player_a"],
+                        r["player_b"],
+                        r["book"],
+                        r["price_decimal"],
+                        r["price_american"],
+                        r["confidence"],
+                        r["ev"],
+                        r["ev_adj"],
+                        created_ts,
+                        int(existing["id"]),
+                    ),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    INSERT INTO {target_table} (
+                      date_et, created_ts,
+                      snapshot_id, candidate_id,
+                      sport_key, match_id, commence_time, player_a, player_b,
+                      market_type, side, line, book, price_decimal, price_american,
+                      confidence, ev, ev_adj,
+                      result, settled_ts, score_json,
+                      first_seen_ts, last_seen_ts, capture_count
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        row_date_et,
+                        created_ts,
+                        snapshot_id,
+                        int(r["candidate_id"]),
+                        sport_key,
+                        r["match_id"],
+                        r["commence_time"],
+                        r["player_a"],
+                        r["player_b"],
+                        r["market_type"],
+                        r["side"],
+                        r["line"],
+                        r["book"],
+                        r["price_decimal"],
+                        r["price_american"],
+                        r["confidence"],
+                        r["ev"],
+                        r["ev_adj"],
+                        "OPEN",
+                        None,
+                        None,
+                        created_ts,
+                        created_ts,
+                        1,
+                    ),
+                )
+            captured[r["view_mode"]] += 1
+        return captured
+
     def _match_status_counts(payload_rows: list[dict]):
         now_utc = datetime.now(timezone.utc)
         out = {"yet_to_start": 0, "live": 0, "ended": 0, "total_matches": 0}
@@ -1668,6 +1787,7 @@ def create_app():
             "latest_actionables": {},
             "latest_watchlist": {},
             "settled_actionables": {},
+            "settled_watchlist": {},
             "notes": [],
         }
         thresholds = _selection_thresholds()
@@ -1799,6 +1919,26 @@ def create_app():
         else:
             summary["notes"].append("Not enough settled actionables yet for a real threshold backtest.")
 
+        settled_watchlist = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS settled_n,
+              SUM(CASE WHEN result = 'WIN' THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN result = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+              ROUND(AVG(price_decimal), 2) AS avg_odds,
+              ROUND(AVG(confidence), 3) AS avg_conf,
+              ROUND(AVG(ev_adj), 3) AS avg_ev_adj
+            FROM daily_watchlist
+            WHERE result IN ('WIN', 'LOSS')
+            """
+        ).fetchone()
+        summary["settled_watchlist"] = dict(settled_watchlist) if settled_watchlist else {}
+        settled_watchlist_n = int((settled_watchlist or {"settled_n": 0})["settled_n"] or 0)
+        if settled_watchlist_n > 0:
+            ww = int((settled_watchlist or {"wins": 0})["wins"] or 0)
+            wl = int((settled_watchlist or {"losses": 0})["losses"] or 0)
+            summary["settled_watchlist"]["win_rate"] = safe_win_rate(ww, wl)
+
         settled_join = conn.execute(
             """
             SELECT da.result, da.market_type, da.price_decimal, da.confidence, da.ev_adj, rc.units_suggested
@@ -1905,7 +2045,10 @@ def create_app():
             summary["clv_by_tier"].append(rec)
 
         summary["data_tracking"] = {
+            "daily_actionables_rows": int((conn.execute("SELECT COUNT(*) AS n FROM daily_actionables").fetchone() or {"n": 0})["n"] or 0),
+            "daily_watchlist_rows": int((conn.execute("SELECT COUNT(*) AS n FROM daily_watchlist").fetchone() or {"n": 0})["n"] or 0),
             "settled_actionables": settled_n,
+            "settled_watchlist": settled_watchlist_n,
             "paper_bets": int((conn.execute("SELECT COUNT(*) AS n FROM paper_bets").fetchone() or {"n": 0})["n"] or 0),
             "paper_bets_open": int((conn.execute("SELECT COUNT(*) AS n FROM paper_bets WHERE COALESCE(result, 'OPEN') = 'OPEN'").fetchone() or {"n": 0})["n"] or 0),
             "clv_rows": int((conn.execute("SELECT COUNT(*) AS n FROM clv_snapshots").fetchone() or {"n": 0})["n"] or 0),
@@ -2171,63 +2314,13 @@ def create_app():
                 ),
             )
 
-        # Optional: capture actionable recommendations into daily_actionables (audit log)
-        # Call /api/odds&capture_daily=1 once per day to snapshot the actionable list.
-        if (request.args.get("capture_daily") or "0") == "1":
-            try:
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                date_et = dt.astimezone(ET).date().isoformat()
-                created_ts = utc_now_iso()
-                rows = conn.execute(
-                    """
-                    SELECT id as candidate_id, match_id, commence_time, player_a, player_b,
-                           market_type, side, line, book, price_decimal, price_american,
-                           confidence, ev, ev_adj, view_mode
-                    FROM ranked_candidates
-                    WHERE snapshot_id = ? AND view_mode IN ('actionable','watchlist')
-                    ORDER BY ev_adj DESC NULLS LAST
-                    """,
-                    (snapshot_id,),
-                ).fetchall()
-
-                for r in rows:
-                    row_date_et = _et_date_from_iso(r["commence_time"]) or date_et
-                    target_table = "daily_actionables" if r["view_mode"] == 'actionable' else "daily_watchlist"
-                    conn.execute(
-                        f"""
-                        INSERT OR IGNORE INTO {target_table} (
-                          date_et, created_ts,
-                          snapshot_id, candidate_id,
-                          sport_key, match_id, commence_time, player_a, player_b,
-                          market_type, side, line, book, price_decimal, price_american,
-                          confidence, ev, ev_adj,
-                          result
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        (
-                            row_date_et,
-                            created_ts,
-                            snapshot_id,
-                            int(r["candidate_id"]),
-                            sport_key,
-                            r["match_id"],
-                            r["commence_time"],
-                            r["player_a"],
-                            r["player_b"],
-                            r["market_type"],
-                            r["side"],
-                            r["line"],
-                            r["book"],
-                            r["price_decimal"],
-                            r["price_american"],
-                            r["confidence"],
-                            r["ev"],
-                            r["ev_adj"],
-                            "OPEN",
-                        ),
-                    )
-            except Exception:
-                pass
+        # Always capture the day's actionables + watchlist durably.
+        # We upsert onto a daily logical key so history survives later live-board changes.
+        capture_daily_result = {"actionable": 0, "watchlist": 0}
+        try:
+            capture_daily_result = _capture_daily_recommendations(conn, snapshot_id=snapshot_id, sport_key=sport_key, created_ts=ts)
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()

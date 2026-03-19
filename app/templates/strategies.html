@@ -21,9 +21,9 @@
     <div class="muted">Win rate {% if audit.settled_actionables.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_actionables.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
   </div>
   <div class="card" style="margin:0;">
-    <div class="muted">CLV rows</div>
-    <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.clv_rows or 0 }}</div>
-    <div class="muted">Paper bets {{ audit.data_tracking.paper_bets or 0 }} • Open {{ audit.data_tracking.paper_bets_open or 0 }}</div>
+    <div class="muted">Settled watchlist</div>
+    <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.settled_watchlist or 0 }}</div>
+    <div class="muted">Win rate {% if audit.settled_watchlist.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_watchlist.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
   </div>
 </div>
 
@@ -174,21 +174,26 @@
 
 <div class="card">
   <h3 style="margin-top:0;">Current selection audit</h3>
-  <div class="grid2" style="grid-template-columns: repeat(3, 1fr);">
+  <div class="grid2" style="grid-template-columns: repeat(4, 1fr);">
     <div class="card" style="margin:0;">
-      <div class="muted">Recent actionable rows</div>
-      <div style="font-size:24px; font-weight:800;">{{ audit.latest_actionables.n or 0 }}</div>
-      <div class="muted">Avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Max odds {{ audit.latest_actionables.max_odds or '—' }} • Matchup {{ audit.latest_actionables.avg_matchup_strength or '—' }}</div>
+      <div class="muted">Daily actionable history rows</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.daily_actionables_rows or 0 }}</div>
+      <div class="muted">Latest avg odds {{ audit.latest_actionables.avg_odds or '—' }} • Matchup {{ audit.latest_actionables.avg_matchup_strength or '—' }}</div>
     </div>
     <div class="card" style="margin:0;">
-      <div class="muted">Recent watchlist rows</div>
-      <div style="font-size:24px; font-weight:800;">{{ audit.latest_watchlist.n or 0 }}</div>
-      <div class="muted">Avg odds {{ audit.latest_watchlist.avg_odds or '—' }} • Avg conf {{ audit.latest_watchlist.avg_conf or '—' }} • Reliability {{ audit.latest_watchlist.avg_reliability or '—' }}</div>
+      <div class="muted">Daily watchlist history rows</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.data_tracking.daily_watchlist_rows or 0 }}</div>
+      <div class="muted">Latest avg odds {{ audit.latest_watchlist.avg_odds or '—' }} • Avg conf {{ audit.latest_watchlist.avg_conf or '—' }} • Reliability {{ audit.latest_watchlist.avg_reliability or '—' }}</div>
     </div>
     <div class="card" style="margin:0;">
       <div class="muted">Settled actionables</div>
       <div style="font-size:24px; font-weight:800;">{{ audit.settled_actionables.settled_n or 0 }}</div>
       <div class="muted">Win rate {% if audit.settled_actionables.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_actionables.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="muted">Settled watchlist</div>
+      <div style="font-size:24px; font-weight:800;">{{ audit.settled_watchlist.settled_n or 0 }}</div>
+      <div class="muted">Win rate {% if audit.settled_watchlist.get('win_rate') is not none %}{{ '%.1f'|format(audit.settled_watchlist.get('win_rate')*100) }}%{% else %}—{% endif %}</div>
     </div>
   </div>
 </div>

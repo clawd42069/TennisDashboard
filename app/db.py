@@ -280,6 +280,9 @@ def migrate():
           result TEXT,                      -- WIN|LOSS|PUSH|VOID|OPEN
           settled_ts TEXT,
           score_json TEXT,
+          first_seen_ts TEXT,
+          last_seen_ts TEXT,
+          capture_count INTEGER DEFAULT 0,
 
           UNIQUE(date_et, candidate_id)
         );
@@ -313,6 +316,9 @@ def migrate():
           result TEXT,
           settled_ts TEXT,
           score_json TEXT,
+          first_seen_ts TEXT,
+          last_seen_ts TEXT,
+          capture_count INTEGER DEFAULT 0,
           UNIQUE(date_et, candidate_id)
         );
         """
@@ -395,6 +401,12 @@ def migrate():
         "ALTER TABLE ranked_candidates ADD COLUMN matchup_strength REAL;",
         "ALTER TABLE ranked_candidates ADD COLUMN market_value REAL;",
         "ALTER TABLE ranked_candidates ADD COLUMN reliability REAL;",
+        "ALTER TABLE daily_actionables ADD COLUMN first_seen_ts TEXT;",
+        "ALTER TABLE daily_actionables ADD COLUMN last_seen_ts TEXT;",
+        "ALTER TABLE daily_actionables ADD COLUMN capture_count INTEGER DEFAULT 0;",
+        "ALTER TABLE daily_watchlist ADD COLUMN first_seen_ts TEXT;",
+        "ALTER TABLE daily_watchlist ADD COLUMN last_seen_ts TEXT;",
+        "ALTER TABLE daily_watchlist ADD COLUMN capture_count INTEGER DEFAULT 0;",
         "ALTER TABLE paper_bets ADD COLUMN match_label TEXT;",
         "ALTER TABLE paper_bets ADD COLUMN odds_american INTEGER;",
         "ALTER TABLE paper_bets ADD COLUMN pnl_units REAL;",
